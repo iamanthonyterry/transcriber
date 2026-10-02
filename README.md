@@ -30,7 +30,7 @@ macOS will ask for microphone permission the first time (for Terminal, or whatev
 ## Standalone app for another computer (no setup, works offline)
 
 On a Mac with internet and about 6 GB free, run `./build_app.sh`. It produces
-`dist/Lifepoint-Transcriber.zip` (~1.6 GB) containing the app with Python, every library
+`dist/Transcriber.zip` (~1.6 GB) containing the app with Python, every library
 and the Whisper model inside. On the other Apple Silicon Mac (macOS 13+): unzip, drag
 **Lifepoint Transcriber** to Applications, and open it. The app isn't Apple-notarized, so the
 first time, right-click it → **Open** → **Open** (or allow it in System Settings → Privacy & Security).
@@ -44,8 +44,8 @@ The app updates itself from GitHub Releases (`iamanthonyterry/transcriber`). To 
 git tag v1.0.1 && git push --tags
 ```
 
-GitHub Actions builds the app and publishes a release with two files: `Lifepoint-Transcriber.zip`
-(full, with the model, for first installs) and `Lifepoint-Transcriber-update.zip` (small, no model,
+GitHub Actions builds the app and publishes a release with two files: `Transcriber.zip`
+(full, with the model, for first installs) and `Transcriber-update.zip` (small, no model,
 used by the updater). Installed apps check on launch and every 4 hours; the menu shows the version and
 **Check for updates…**. An update downloads in the background and installs/restarts on its own if the
 transcriber is stopped; if it's running, the menu shows **Restart to update** so a live service isn't interrupted.

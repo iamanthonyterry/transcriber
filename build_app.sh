@@ -31,13 +31,13 @@ zip -q -d "$LIB/python${PYV/./}.zip" '_sounddevice_data/*' || true
 rsync -a --exclude __pycache__ ".venv/lib/python$PYV/site-packages/_sounddevice_data" "$LIB/python$PYV/"
 
 # 4a. Zip the app WITHOUT the model for auto-updates (the updater keeps the model already installed)
-(cd dist && ditto -c -k --keepParent "Lifepoint Transcriber.app" "Lifepoint-Transcriber-update.zip")
+(cd dist && ditto -c -k --keepParent "Lifepoint Transcriber.app" "Transcriber-update.zip")
 
 # 4. Put the model inside (cp -c makes a copy-on-write clone: instant, no extra disk space)
 mkdir -p "$APP/Contents/Resources/model"
 cp -c -L "$SRC/weights.safetensors" "$SRC/config.json" "$APP/Contents/Resources/model/"
 
 # 5. Zip the full app (with model) for first installs on another computer
-(cd dist && ditto -c -k --keepParent "Lifepoint Transcriber.app" "Lifepoint-Transcriber.zip")
+(cd dist && ditto -c -k --keepParent "Lifepoint Transcriber.app" "Transcriber.zip")
 echo
-echo "Done: dist/Lifepoint-Transcriber.zip (first install) and dist/Lifepoint-Transcriber-update.zip (auto-update)"
+echo "Done: dist/Transcriber.zip (first install) and dist/Transcriber-update.zip (auto-update)"

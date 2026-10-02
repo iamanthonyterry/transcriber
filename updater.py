@@ -1,7 +1,7 @@
 """Self-update from GitHub Releases for the built (py2app) app.
 
 The release has two zips: the full app (with the ~1.5 GB Whisper model, for first installs) and
-`Lifepoint-Transcriber-update.zip` (everything but the model, ~200 MB). Updates use the small one and
+`Transcriber-update.zip` (everything but the model, ~200 MB). Updates use the small one and
 carry the existing model over, so people never re-download it.
 """
 
@@ -20,7 +20,7 @@ from pathlib import Path
 from version import __version__
 
 REPO = "iamanthonyterry/transcriber"
-UPDATE_ASSET = "Lifepoint-Transcriber-update.zip"
+UPDATE_ASSET = "Transcriber-update.zip"
 API = f"https://api.github.com/repos/{REPO}/releases/latest"
 
 
