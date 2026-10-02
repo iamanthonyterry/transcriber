@@ -24,6 +24,8 @@ final class AppModel: ObservableObject {
 
     @Published var translationNote: String?
     @Published var languages: [TranslationLanguage] = []
+    /// Languages waiting for the system's download prompt, one at a time.
+    @Published var downloadQueue: [String] = []
     private let translator = Translator()
     private let engine = SpeechEngine()
     private let capture = AudioCapture()
@@ -149,8 +151,23 @@ final class AppModel: ObservableObject {
     }
 
     func toggleLanguage(_ code: String) {
-        if let i = settings.translateTo.firstIndex(of: code) { settings.translateTo.remove(at: i) } else { settings.translateTo.append(code) }
+        if let i = settings.translateTo.firstIndex(of: code) {
+            settings.translateTo.remove(at: i)
+            downloadQueue.removeAll { $0 == code }
+        } else {
+            settings.translateTo.append(code)
+            Task {
+                // macOS shows its own download prompt for a language that isn't installed yet
+                if await translator.availability(of: code) == .needsDownload, !downloadQueue.contains(code) { downloadQueue.append(code) }
+            }
+        }
         saveSettings()
+        checkTranslation()
+    }
+
+    /// Called when the system's download prompt for the first queued language is done (installed or cancelled).
+    func finishDownload() {
+        if !downloadQueue.isEmpty { downloadQueue.removeFirst() }
         checkTranslation()
     }
 

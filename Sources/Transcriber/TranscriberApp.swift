@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import Translation
 
 @main
 struct TranscriberApp: App {
@@ -250,6 +251,33 @@ struct TranscriptView: View {
         }
         .frame(minWidth: 300, minHeight: 160)
         .background(WindowLevelSetter(floating: floating))
+        .modifier(LanguageDownloader(model: model))
+    }
+}
+
+/// Shows Apple's "Download language?" prompt for languages picked in the Translate menu (macOS 15+).
+private struct LanguageDownloader: ViewModifier {
+    @ObservedObject var model: AppModel
+
+    func body(content: Content) -> some View {
+        if #available(macOS 15, *) { content.modifier(Prompt(model: model)) } else { content }
+    }
+
+    @available(macOS 15, *)
+    private struct Prompt: ViewModifier {
+        @ObservedObject var model: AppModel
+        @State private var config: TranslationSession.Configuration?
+
+        func body(content: Content) -> some View {
+            content
+                .translationTask(config) { session in
+                    try? await session.prepareTranslation()
+                    await MainActor.run { model.finishDownload() }
+                }
+                .onChange(of: model.downloadQueue.first, initial: true) { _, code in
+                    config = code.map { .init(source: Locale.Language(identifier: "en"), target: Locale.Language(identifier: $0)) }
+                }
+        }
     }
 }
 
