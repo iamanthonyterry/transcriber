@@ -26,10 +26,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # v1.0.0 apps look for the old update name, so keep a copy under it. Drop once everyone is past 1.0.0.
-          cp dist/Transcriber-update.zip dist/Lifepoint-Transcriber-update.zip
           gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes \
-            dist/Transcriber.zip dist/Transcriber-update.zip dist/Lifepoint-Transcriber-update.zip
+            dist/Transcriber.zip dist/Transcriber-update.zip
       - name: Keep the update zip as an artifact on manual runs
         if: ${{ !startsWith(github.ref, 'refs/tags/v') }}
         uses: actions/upload-artifact@v4
