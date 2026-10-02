@@ -11,6 +11,10 @@ final class AppModel: ObservableObject {
     @Published var lastText = ""
     /// Recent phrases shown in the local transcript window (newest last).
     @Published var lines: [TranscriptLine] = []
+    /// Every phrase of the current session (survives "Clear"); saved and reset when the session ends.
+    private(set) var sessionLog: [TranscriptLine] = []
+    private var sessionStart = Date()
+    private var restarting = false
     @Published var running = false
     @Published var listening = false
     @Published var devices: [InputDevice] = []
@@ -57,6 +61,7 @@ final class AppModel: ObservableObject {
             a.runModal()
             return
         }
+        if !restarting { beginSession() }
         running = true
         status = "Starting…"
         runTask = Task { await self.run() }
@@ -72,6 +77,7 @@ final class AppModel: ObservableObject {
         running = false
         listening = false
         status = "Stopped"
+        if !restarting { endSession() }
         if let install = pendingUpdate { install() }  // an update was waiting for the service to finish
     }
 
@@ -81,8 +87,49 @@ final class AppModel: ObservableObject {
     func apply() {
         SettingsStore.save(settings, token: token)
         if running {
+            restarting = true  // a settings change must not split the session
             stop()
             start()
+            restarting = false
+        }
+    }
+
+    // MARK: session transcript
+
+    private func beginSession() {
+        sessionLog = []
+        lines = []
+        sessionStart = Date()
+    }
+
+    /// Ends the session, saving a copy if asked, and returns where it was saved.
+    @discardableResult
+    func endSession() -> URL? {
+        defer { sessionLog = [] }
+        guard settings.saveCopy, !settings.saveFolder.isEmpty else { return nil }
+        return saveTranscript(to: URL(fileURLWithPath: settings.saveFolder, isDirectory: true))
+    }
+
+    /// Writes the session so far as a text file in `folder` (used at session end and by "Save transcript now").
+    @discardableResult
+    func saveTranscript(to folder: URL) -> URL? {
+        guard !sessionLog.isEmpty else { return nil }
+        let name = "Transcript \(sessionStart.formatted(.iso8601.year().month().day())) \(sessionStart.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute()).replacingOccurrences(of: ":", with: "."))"
+        var url = folder.appendingPathComponent(name + ".txt")
+        var n = 2
+        while FileManager.default.fileExists(atPath: url.path) { url = folder.appendingPathComponent("\(name) \(n).txt"); n += 1 }
+        var out = ""
+        for line in sessionLog {
+            out += line.text + "\n"
+            for code in settings.translateTo { if let t = line.translations[code] { out += "  [\(code)] \(t)\n" } }
+        }
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try out.write(to: url, atomically: true, encoding: .utf8)
+            return url
+        } catch {
+            status = "Couldn't save transcript: \(error.localizedDescription)"
+            return nil
         }
     }
 
@@ -125,8 +172,9 @@ final class AppModel: ObservableObject {
 
     private func show(_ text: String, translations: [String: String]) {
         lastText = text
-        lines.append(TranscriptLine(text: text, translations: translations))
-        if lines.count > 200 { lines.removeFirst(lines.count - 200) }
+        let line = TranscriptLine(text: text, translations: translations)
+        lines.append(line)
+        sessionLog.append(line)
     }
 
     func liveURL() -> URL? {
@@ -185,9 +233,10 @@ final class AppModel: ObservableObject {
         }
 
         while !Task.isCancelled {
-            if settings.scheduleOn && !Schedule.inWindow() {
+            if settings.scheduleOn && !Schedule.inWindow(settings) {
                 status = "Waiting for the schedule"
-                while !Task.isCancelled && !Schedule.inWindow() { try? await Task.sleep(for: .seconds(1)) }
+                while !Task.isCancelled && !(settings.scheduleOn ? Schedule.inWindow(settings) : true) { try? await Task.sleep(for: .seconds(1)) }
+                if !Task.isCancelled { beginSession() }  // a new window is a new transcript
                 continue
             }
             if await listenUntilDone(phraseSink) == false { return }
@@ -210,12 +259,17 @@ final class AppModel: ObservableObject {
         }
         status = "Listening"
         listening = true
-        while !Task.isCancelled && !interrupted.flag && !(settings.scheduleOn && !Schedule.inWindow()) {
+        while !Task.isCancelled && !interrupted.flag && !(settings.scheduleOn && !Schedule.inWindow(settings)) {
             try? await Task.sleep(for: .seconds(1))
         }
+        let windowEnded = settings.scheduleOn && !Schedule.inWindow(settings)
         capture.stop()
         listening = false
         queue.sync { if let tail = segmenter.flush() { sink.yield(tail) } }
+        if windowEnded && !Task.isCancelled {
+            try? await Task.sleep(for: .seconds(4))  // let the last phrase finish transcribing
+            if let saved = endSession() { status = "Saved \(saved.lastPathComponent)" }
+        }
         if interrupted.flag && !Task.isCancelled {
             status = "Audio changed — reconnecting…"
             refreshDevices()

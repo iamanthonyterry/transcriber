@@ -22,6 +22,7 @@ struct TranscriberApp: App {
         Window("Live transcript", id: "transcript") {
             TranscriptView(model: model)
         }
+        .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 380, height: 260)
 
         Window("Website settings", id: "settings") {
@@ -58,12 +59,21 @@ struct MenuContent: View {
         Picker("Input channel", selection: Binding(get: { model.settings.channel }, set: { model.settings.channel = $0; model.apply() })) {
             ForEach(1...model.channelCount, id: \.self) { Text("Channel \($0)").tag($0) }
         }
-        Toggle("Only Sundays 8:00–12:30", isOn: Binding(get: { model.settings.scheduleOn }, set: { model.settings.scheduleOn = $0; model.apply() }))
+        Toggle("Only \(Schedule.summary(model.settings))", isOn: Binding(get: { model.settings.scheduleOn }, set: { model.settings.scheduleOn = $0; model.apply() }))
         Divider()
         Button("Show transcript") {
             openWindow(id: "transcript")
             NSApp.activate(ignoringOtherApps: true)
         }
+        Button("Save transcript now") {
+            if !model.settings.saveFolder.isEmpty, model.saveTranscript(to: URL(fileURLWithPath: model.settings.saveFolder)) != nil { return }
+            let p = NSOpenPanel()
+            p.canChooseDirectories = true; p.canChooseFiles = false; p.canCreateDirectories = true
+            p.prompt = "Save Here"
+            NSApp.activate(ignoringOtherApps: true)
+            if p.runModal() == .OK, let u = p.url { model.saveTranscript(to: u) }
+        }
+        .disabled(model.sessionLog.isEmpty)
         Button("Open live page") { if let u = model.liveURL() { NSWorkspace.shared.open(u) } }
         Button("Website settings…") {
             openWindow(id: "settings")
@@ -93,6 +103,63 @@ struct SettingsView: View {
             Section("Behavior") {
                 Toggle("Start listening when the app opens", isOn: $model.settings.autoStart)
                 Toggle("Open at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
+            }
+            Section("Schedule") {
+                Toggle("Only listen during this schedule", isOn: $model.settings.scheduleOn)
+                ForEach($model.settings.scheduleWindows) { $w in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Picker("", selection: Binding(get: { w.date != nil }, set: { w.date = $0 ? (w.date ?? Date()) : nil })) {
+                                Text("Repeats weekly").tag(false)
+                                Text("One time").tag(true)
+                            }
+                            .pickerStyle(.segmented).labelsHidden().fixedSize()
+                            Spacer()
+                            Button(role: .destructive) {
+                                model.settings.scheduleWindows.removeAll { $0.id == w.id }
+                            } label: { Image(systemName: "trash") }
+                        }
+                        if w.date != nil {
+                            DatePicker("On", selection: Binding(get: { w.date ?? Date() }, set: { w.date = $0 }), displayedComponents: .date)
+                            if let d = w.date, d < Calendar.current.startOfDay(for: Date()) {
+                                Text("This date has passed.").font(.caption).foregroundStyle(.orange)
+                            }
+                        } else {
+                            HStack {
+                                ForEach(1...7, id: \.self) { d in
+                                    Toggle(Calendar.current.veryShortWeekdaySymbols[d - 1], isOn: Binding(
+                                        get: { w.days.contains(d) },
+                                        set: { if $0 { w.days.insert(d) } else { w.days.remove(d) } }))
+                                        .toggleStyle(.button)
+                                }
+                            }
+                        }
+                        HStack {
+                            DatePicker("From", selection: Binding(get: { Schedule.date(w.start) }, set: { w.start = Schedule.minutes($0) }), displayedComponents: .hourAndMinute)
+                            DatePicker("to", selection: Binding(get: { Schedule.date(w.end) }, set: { w.end = Schedule.minutes($0) }), displayedComponents: .hourAndMinute)
+                        }
+                        if w.end <= w.start {
+                            Text("End must be after start (same day).").font(.caption).foregroundStyle(.orange)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                Button("Add another time") { model.settings.scheduleWindows.append(ScheduleWindow()) }
+            }
+            Section("Transcript copy") {
+                Toggle("Save a copy of the transcript when a session ends", isOn: $model.settings.saveCopy)
+                HStack {
+                    Text(model.settings.saveFolder.isEmpty ? "No folder chosen" : model.settings.saveFolder)
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                    Spacer()
+                    Button("Choose…") {
+                        let p = NSOpenPanel()
+                        p.canChooseDirectories = true; p.canChooseFiles = false; p.canCreateDirectories = true
+                        if p.runModal() == .OK, let u = p.url { model.settings.saveFolder = u.path }
+                    }
+                }
+                Text("A session ends when you stop transcribing, quit, or the schedule’s end time passes. The whole session is kept (Clear only empties the window).")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("Tuning") {
                 TextField("Corrections", text: $model.settings.corrections, axis: .vertical)
@@ -140,7 +207,7 @@ struct TranscriptView: View {
                 Toggle("Keep on top", isOn: $floating).toggleStyle(.checkbox).font(.caption)
                 Button("Clear") { model.lines.removeAll() }.controlSize(.small)
             }
-            .padding(.horizontal, 10).padding(.vertical, 6)
+            .padding(.horizontal, 10).padding(.top, 10).padding(.bottom, 6)
             if !model.settings.translateTo.isEmpty {
                 Toggle("Send translations to the website (viewers pick their language)", isOn: Binding(get: { model.settings.sendTranslations }, set: {
                     model.settings.sendTranslations = $0
@@ -161,8 +228,6 @@ struct TranscriptView: View {
                         }
                         ForEach(model.lines) { line in
                             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                                Text(line.date, format: .dateTime.hour().minute().second())
-                                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(line.text).textSelection(.enabled)
                                     ForEach(model.settings.translateTo, id: \.self) { code in
@@ -192,6 +257,16 @@ private struct WindowLevelSetter: NSViewRepresentable {
     let floating: Bool
     func makeNSView(context: Context) -> NSView { NSView() }
     func updateNSView(_ view: NSView, context: Context) {
-        DispatchQueue.main.async { view.window?.level = floating ? .floating : .normal }
+        DispatchQueue.main.async {
+            guard let w = view.window else { return }
+            w.level = floating ? .floating : .normal
+            w.titlebarAppearsTransparent = true
+            w.titleVisibility = .hidden
+            w.styleMask.insert(.fullSizeContentView)
+            w.isMovableByWindowBackground = true
+            w.isOpaque = false
+            w.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.85)
+            for b in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] { w.standardWindowButton(b)?.isHidden = true }
+        }
     }
 }

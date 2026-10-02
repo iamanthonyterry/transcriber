@@ -11,10 +11,24 @@ struct Settings: Codable, Equatable {
     var corrections = defaultCorrections  // one "heard => correct" per line, applied to every phrase
     var minDb = -50.0
     var scheduleOn = false
+    var scheduleWindows = [ScheduleWindow()]  // listens during any of these
+    var saveCopy = false               // write the whole transcript to saveFolder when a session ends
+    var saveFolder = ""
     var translateTo: [String] = []  // language codes translated on-device (shown locally, optionally sent)
     var sendTranslations = false    // also send the translations to the website for viewers to pick from
     var autoStart = true           // start listening when the app opens (survives updates and reboots)
 }
+
+/// One recurring listening window: chosen weekdays between a start and end time (minutes after midnight).
+struct ScheduleWindow: Codable, Equatable, Identifiable {
+    var id = UUID()
+    var days: Set<Int> = [1]  // Calendar weekdays, 1 = Sunday (repeats weekly)
+    var date: Date?           // set = a one-off on that calendar day instead of repeating
+    var start = 8 * 60
+    var end = 12 * 60 + 30
+}
+
+private enum LegacyKeys: String, CodingKey { case scheduleDays, scheduleStart, scheduleEnd }
 
 extension Settings {
     /// Missing keys (settings saved by an older version) fall back to defaults instead of resetting everything.
@@ -27,6 +41,16 @@ extension Settings {
         corrections = try c.decodeIfPresent(String.self, forKey: .corrections) ?? d.corrections
         minDb = try c.decodeIfPresent(Double.self, forKey: .minDb) ?? d.minDb
         scheduleOn = try c.decodeIfPresent(Bool.self, forKey: .scheduleOn) ?? d.scheduleOn
+        if let w = try c.decodeIfPresent([ScheduleWindow].self, forKey: .scheduleWindows) {
+            scheduleWindows = w
+        } else if let old = try? decoder.container(keyedBy: LegacyKeys.self), let days = try old.decodeIfPresent(Set<Int>.self, forKey: .scheduleDays) {
+            // 2.1 saved a single window
+            scheduleWindows = [ScheduleWindow(days: days,
+                                              start: try old.decodeIfPresent(Int.self, forKey: .scheduleStart) ?? 480,
+                                              end: try old.decodeIfPresent(Int.self, forKey: .scheduleEnd) ?? 750)]
+        }
+        saveCopy = try c.decodeIfPresent(Bool.self, forKey: .saveCopy) ?? d.saveCopy
+        saveFolder = try c.decodeIfPresent(String.self, forKey: .saveFolder) ?? d.saveFolder
         translateTo = try c.decodeIfPresent([String].self, forKey: .translateTo) ?? d.translateTo
         sendTranslations = try c.decodeIfPresent(Bool.self, forKey: .sendTranslations) ?? d.sendTranslations
         autoStart = try c.decodeIfPresent(Bool.self, forKey: .autoStart) ?? d.autoStart
