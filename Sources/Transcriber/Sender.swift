@@ -7,8 +7,8 @@ final class Sender: @unchecked Sendable {
     private let token: String
     private let dryRun: Bool
     private let onStatus: @Sendable (String) -> Void
-    private let stream: AsyncStream<String>
-    private let continuation: AsyncStream<String>.Continuation
+    private let stream: AsyncStream<Outgoing>
+    private let continuation: AsyncStream<Outgoing>.Continuation
     private var task: Task<Void, Never>?
     private let lock = NSLock()
     private var _campus: String?
@@ -21,7 +21,7 @@ final class Sender: @unchecked Sendable {
         self.token = token
         self.dryRun = dryRun
         self.onStatus = onStatus
-        (stream, continuation) = AsyncStream.makeStream(of: String.self, bufferingPolicy: .bufferingNewest(300))
+        (stream, continuation) = AsyncStream.makeStream(of: Outgoing.self, bufferingPolicy: .bufferingNewest(300))
         task = Task { [weak self] in await self?.run() }
     }
 
@@ -30,7 +30,14 @@ final class Sender: @unchecked Sendable {
         continuation.finish()
     }
 
-    func send(_ text: String) { continuation.yield(text) }
+    struct Outgoing: Sendable {
+        let text: String
+        var translations: [String: String] = [:]  // language code -> text
+    }
+
+    func send(_ text: String, translations: [String: String] = [:]) {
+        continuation.yield(Outgoing(text: text, translations: translations))
+    }
 
     /// Tells the website this campus is live. Best effort; never queued.
     func heartbeat() async {
@@ -52,13 +59,15 @@ final class Sender: @unchecked Sendable {
 
     private enum SendError: Error { case http(Int), badURL }
 
-    private func post(_ text: String?) async throws {
+    private func post(_ text: String?, translations: [String: String] = [:]) async throws {
         guard let url else { throw SendError.badURL }
         var req = URLRequest(url: url, timeoutInterval: 10)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        req.httpBody = try JSONSerialization.data(withJSONObject: text.map { ["text": $0] } ?? ["heartbeat": true])
+        var body: [String: Any] = text.map { ["text": $0] } ?? ["heartbeat": true]
+        if !translations.isEmpty { body["translations"] = translations }
+        req.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, res) = try await URLSession.shared.data(for: req)
         let code = (res as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(code) else { throw SendError.http(code) }
@@ -69,12 +78,12 @@ final class Sender: @unchecked Sendable {
 
     private func run() async {
         var warned = false
-        for await text in stream {
+        for await item in stream {
             if dryRun { continue }
             var delay = 1.0
             while !Task.isCancelled {
                 do {
-                    try await post(text)
+                    try await post(item.text, translations: item.translations)
                     if warned {
                         warned = false
                         onStatus("Listening")

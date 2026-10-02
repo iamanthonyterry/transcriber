@@ -20,6 +20,22 @@ enum AudioDevices {
         }
     }
 
+    static func defaultInput() -> AudioDeviceID {
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var id = AudioDeviceID(0)
+        var size = UInt32(MemoryLayout<AudioDeviceID>.size)
+        AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &id)
+        return id
+    }
+
+    /// Returns nil on success, or the CoreAudio error code.
+    static func setDefaultInput(_ id: AudioDeviceID) -> OSStatus? {
+        var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var id = id
+        let err = AudioObjectSetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, UInt32(MemoryLayout<AudioDeviceID>.size), &id)
+        return err == noErr ? nil : err
+    }
+
     static func inputChannels(_ id: AudioDeviceID) -> Int {
         var addr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreamConfiguration, mScope: kAudioDevicePropertyScopeInput, mElement: kAudioObjectPropertyElementMain)
         var size: UInt32 = 0
@@ -49,17 +65,23 @@ struct CaptureError: LocalizedError {
 final class AudioCapture {
     private var engine: AVAudioEngine?
     private var configObserver: NSObjectProtocol?
+    private var previousDefault: AudioDeviceID?
 
     /// `onSamples` is called on an audio thread; hand the work off quickly.
     /// `onInterrupted` fires when macOS changes the audio setup (device unplugged, sample rate change).
     func start(device: InputDevice?, channel: Int, onSamples: @escaping ([Float]) -> Void, onInterrupted: @escaping () -> Void) throws {
         stop()
+        // AVAudioEngine's AUHAL refuses input-only devices ('nope'), so switch the system
+        // default input for the duration of the recording and restore it in stop().
+        if let device, AudioDevices.defaultInput() != device.id {
+            previousDefault = AudioDevices.defaultInput()
+            if let err = AudioDevices.setDefaultInput(device.id) {
+                previousDefault = nil
+                throw CaptureError(message: "Couldn't select “\(device.name)” (error \(err))")
+            }
+        }
         let engine = AVAudioEngine()
         let input = engine.inputNode
-        if var id = device?.id, let unit = input.audioUnit {
-            let err = AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &id, UInt32(MemoryLayout<AudioDeviceID>.size))
-            if err != noErr { throw CaptureError(message: "Couldn't select “\(device!.name)” (error \(err))") }
-        }
         let hw = input.outputFormat(forBus: 0)
         guard hw.channelCount > 0, hw.sampleRate > 0 else { throw CaptureError(message: "No audio input available") }
         guard channel >= 1, channel <= Int(hw.channelCount) else {
@@ -103,6 +125,8 @@ final class AudioCapture {
         engine?.inputNode.removeTap(onBus: 0)
         engine?.stop()
         engine = nil
+        if let prev = previousDefault { _ = AudioDevices.setDefaultInput(prev) }
+        previousDefault = nil
     }
 }
 

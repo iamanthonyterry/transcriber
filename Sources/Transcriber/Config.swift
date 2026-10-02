@@ -11,7 +11,26 @@ struct Settings: Codable, Equatable {
     var corrections = defaultCorrections  // one "heard => correct" per line, applied to every phrase
     var minDb = -50.0
     var scheduleOn = false
+    var translateTo: [String] = []  // language codes translated on-device (shown locally, optionally sent)
+    var sendTranslations = false    // also send the translations to the website for viewers to pick from
     var autoStart = true           // start listening when the app opens (survives updates and reboots)
+}
+
+extension Settings {
+    /// Missing keys (settings saved by an older version) fall back to defaults instead of resetting everything.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let d = Settings()
+        url = try c.decodeIfPresent(String.self, forKey: .url) ?? d.url
+        device = try c.decodeIfPresent(String.self, forKey: .device)
+        channel = try c.decodeIfPresent(Int.self, forKey: .channel) ?? d.channel
+        corrections = try c.decodeIfPresent(String.self, forKey: .corrections) ?? d.corrections
+        minDb = try c.decodeIfPresent(Double.self, forKey: .minDb) ?? d.minDb
+        scheduleOn = try c.decodeIfPresent(Bool.self, forKey: .scheduleOn) ?? d.scheduleOn
+        translateTo = try c.decodeIfPresent([String].self, forKey: .translateTo) ?? d.translateTo
+        sendTranslations = try c.decodeIfPresent(Bool.self, forKey: .sendTranslations) ?? d.sendTranslations
+        autoStart = try c.decodeIfPresent(Bool.self, forKey: .autoStart) ?? d.autoStart
+    }
 }
 
 enum Keychain {

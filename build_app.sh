@@ -16,7 +16,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Transcriber"
 cp -R "$SPARKLE" "$APP/Contents/Frameworks/"
-cp Support/icon.icns Support/Resources/* "$APP/Contents/Resources/"
+cp Support/icon.icns "$APP/Contents/Resources/"
 sed "s/__VERSION__/$VERSION/; s/__BUILD__/$BUILD/" Support/Info.plist > "$APP/Contents/Info.plist"
 
 # Sign inside-out: Sparkle's helpers, the framework, then the app.

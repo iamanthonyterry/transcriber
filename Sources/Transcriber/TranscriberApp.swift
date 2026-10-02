@@ -19,6 +19,11 @@ struct TranscriberApp: App {
         }
         .menuBarExtraStyle(.menu)
 
+        Window("Live transcript", id: "transcript") {
+            TranscriptView(model: model)
+        }
+        .defaultSize(width: 380, height: 260)
+
         Window("Website settings", id: "settings") {
             SettingsView(model: model)
         }
@@ -26,18 +31,11 @@ struct TranscriberApp: App {
     }
 }
 
-private let menuIcon: NSImage? = {
-    guard let url = Bundle.main.url(forResource: "menubarTemplate", withExtension: "png"), let img = NSImage(contentsOf: url) else { return nil }
-    img.isTemplate = true
-    img.size = NSSize(width: 18, height: 18)
-    return img
-}()
-
 struct MenuLabel: View {
     let dot: String?
     var body: some View {
         HStack(spacing: 2) {
-            if let menuIcon { Image(nsImage: menuIcon) } else if dot == nil { Text("🎙") }
+            Image(systemName: "mic.fill")
             if let dot { Text(dot) }
         }
     }
@@ -62,6 +60,10 @@ struct MenuContent: View {
         }
         Toggle("Only Sundays 8:00–12:30", isOn: Binding(get: { model.settings.scheduleOn }, set: { model.settings.scheduleOn = $0; model.apply() }))
         Divider()
+        Button("Show transcript") {
+            openWindow(id: "transcript")
+            NSApp.activate(ignoringOtherApps: true)
+        }
         Button("Open live page") { if let u = model.liveURL() { NSWorkspace.shared.open(u) } }
         Button("Website settings…") {
             openWindow(id: "settings")
@@ -115,5 +117,81 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 460)
         .padding()
+    }
+}
+
+struct TranscriptView: View {
+    @ObservedObject var model: AppModel
+    @State private var floating = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Circle().fill(model.listening ? .red : (model.running ? .yellow : .gray)).frame(width: 8, height: 8)
+                Text(model.status).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Spacer()
+                Menu("Translate (\(model.settings.translateTo.count))") {
+                    if model.languages.isEmpty { Text("Needs macOS 26 or newer") }
+                    ForEach(model.languages) { lang in
+                        Toggle(lang.name, isOn: Binding(get: { model.settings.translateTo.contains(lang.code) }, set: { _ in model.toggleLanguage(lang.code) }))
+                    }
+                }
+                .menuStyle(.borderlessButton).fixedSize().font(.caption)
+                Toggle("Keep on top", isOn: $floating).toggleStyle(.checkbox).font(.caption)
+                Button("Clear") { model.lines.removeAll() }.controlSize(.small)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 6)
+            if !model.settings.translateTo.isEmpty {
+                Toggle("Send translations to the website (viewers pick their language)", isOn: Binding(get: { model.settings.sendTranslations }, set: {
+                    model.settings.sendTranslations = $0
+                    model.saveSettings()
+                })).toggleStyle(.checkbox).font(.caption)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.bottom, 4)
+            }
+            if let note = model.translationNote {
+                Text(note).font(.caption).foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.bottom, 4)
+            }
+            Divider()
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 6) {
+                        if model.lines.isEmpty {
+                            Text("Nothing heard yet").foregroundStyle(.secondary)
+                        }
+                        ForEach(model.lines) { line in
+                            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                                Text(line.date, format: .dateTime.hour().minute().second())
+                                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(line.text).textSelection(.enabled)
+                                    ForEach(model.settings.translateTo, id: \.self) { code in
+                                        if let t = line.translations[code] {
+                                            Text(t).foregroundStyle(.blue).textSelection(.enabled)
+                                        }
+                                    }
+                                }
+                            }
+                            .id(line.id)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                }
+                .onChange(of: model.lines.count) {
+                    if let last = model.lines.last { proxy.scrollTo(last.id, anchor: .bottom) }
+                }
+            }
+        }
+        .frame(minWidth: 300, minHeight: 160)
+        .background(WindowLevelSetter(floating: floating))
+    }
+}
+
+private struct WindowLevelSetter: NSViewRepresentable {
+    let floating: Bool
+    func makeNSView(context: Context) -> NSView { NSView() }
+    func updateNSView(_ view: NSView, context: Context) {
+        DispatchQueue.main.async { view.window?.level = floating ? .floating : .normal }
     }
 }
