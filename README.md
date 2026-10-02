@@ -38,7 +38,7 @@ Then follow "Clickable menu-bar app" below for the menu options. Nothing else ne
 
 ## Releases and auto-update
 
-The app updates itself from GitHub Releases (`iamanthonyterry/lifepoint-transcriber`). To ship a new version:
+The app updates itself from GitHub Releases (`iamanthonyterry/transcriber`). To ship a new version:
 
 ```bash
 git tag v1.0.1 && git push --tags

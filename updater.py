@@ -19,7 +19,7 @@ from pathlib import Path
 
 from version import __version__
 
-REPO = "iamanthonyterry/lifepoint-transcriber"
+REPO = "iamanthonyterry/transcriber"
 UPDATE_ASSET = "Lifepoint-Transcriber-update.zip"
 API = f"https://api.github.com/repos/{REPO}/releases/latest"
 
@@ -42,7 +42,7 @@ def parse(v: str) -> tuple[int, ...]:
 
 def latest() -> dict | None:
     """{'version', 'url', 'sha256', 'notes'} for the newest release if it is newer than this app."""
-    req = urllib.request.Request(API, headers={"Accept": "application/vnd.github+json", "User-Agent": "lifepoint-transcriber"})
+    req = urllib.request.Request(API, headers={"Accept": "application/vnd.github+json", "User-Agent": "transcriber"})
     with urllib.request.urlopen(req, timeout=15) as r:
         rel = json.load(r)
     version = rel["tag_name"].lstrip("v")
