@@ -1,5 +1,0 @@
-mlx-whisper
-sounddevice
-numpy
-rumps
-py2app

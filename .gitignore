@@ -1,8 +1,7 @@
-.venv/
-.env
-__pycache__/
+.build/
 build/
+.venv/
 dist/
-model/
-*.pyc
+.env
 .DS_Store
+*.xcodeproj/xcuserdata/
