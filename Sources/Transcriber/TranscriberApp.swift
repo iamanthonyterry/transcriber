@@ -107,45 +107,55 @@ struct SettingsView: View {
             }
             Section("Schedule") {
                 Toggle("Only listen during this schedule", isOn: $model.settings.scheduleOn)
-                ForEach($model.settings.scheduleWindows) { $w in
-                    VStack(alignment: .leading, spacing: 6) {
-                        HStack {
-                            Picker("", selection: Binding(get: { w.date != nil }, set: { w.date = $0 ? (w.date ?? Date()) : nil })) {
-                                Text("Repeats weekly").tag(false)
-                                Text("One time").tag(true)
-                            }
-                            .pickerStyle(.segmented).labelsHidden().fixedSize()
-                            Spacer()
-                            Button(role: .destructive) {
-                                model.settings.scheduleWindows.removeAll { $0.id == w.id }
-                            } label: { Image(systemName: "trash") }
-                        }
-                        if w.date != nil {
-                            DatePicker("On", selection: Binding(get: { w.date ?? Date() }, set: { w.date = $0 }), displayedComponents: .date)
-                            if let d = w.date, d < Calendar.current.startOfDay(for: Date()) {
-                                Text("This date has passed.").font(.caption).foregroundStyle(.orange)
-                            }
-                        } else {
+                Picker("Times from", selection: $model.settings.pcoOn) {
+                    Text("Set manually").tag(false)
+                    Text("Planning Center").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: model.settings.pcoOn) { _, on in if on { Task { await model.refreshPCOTimes() } } }
+                if model.settings.pcoOn {
+                    PlanningCenterSection(model: model)
+                } else {
+                    ForEach($model.settings.scheduleWindows) { $w in
+                        VStack(alignment: .leading, spacing: 6) {
                             HStack {
-                                ForEach(1...7, id: \.self) { d in
-                                    Toggle(Calendar.current.veryShortWeekdaySymbols[d - 1], isOn: Binding(
-                                        get: { w.days.contains(d) },
-                                        set: { if $0 { w.days.insert(d) } else { w.days.remove(d) } }))
-                                        .toggleStyle(.button)
+                                Picker("", selection: Binding(get: { w.date != nil }, set: { w.date = $0 ? (w.date ?? Date()) : nil })) {
+                                    Text("Repeats weekly").tag(false)
+                                    Text("One time").tag(true)
+                                }
+                                .pickerStyle(.segmented).labelsHidden().fixedSize()
+                                Spacer()
+                                Button(role: .destructive) {
+                                    model.settings.scheduleWindows.removeAll { $0.id == w.id }
+                                } label: { Image(systemName: "trash") }
+                            }
+                            if w.date != nil {
+                                DatePicker("On", selection: Binding(get: { w.date ?? Date() }, set: { w.date = $0 }), displayedComponents: .date)
+                                if let d = w.date, d < Calendar.current.startOfDay(for: Date()) {
+                                    Text("This date has passed.").font(.caption).foregroundStyle(.orange)
+                                }
+                            } else {
+                                HStack {
+                                    ForEach(1...7, id: \.self) { d in
+                                        Toggle(Calendar.current.veryShortWeekdaySymbols[d - 1], isOn: Binding(
+                                            get: { w.days.contains(d) },
+                                            set: { if $0 { w.days.insert(d) } else { w.days.remove(d) } }))
+                                            .toggleStyle(.button)
+                                    }
                                 }
                             }
+                            HStack {
+                                DatePicker("From", selection: Binding(get: { Schedule.date(w.start) }, set: { w.start = Schedule.minutes($0) }), displayedComponents: .hourAndMinute)
+                                DatePicker("to", selection: Binding(get: { Schedule.date(w.end) }, set: { w.end = Schedule.minutes($0) }), displayedComponents: .hourAndMinute)
+                            }
+                            if w.end <= w.start {
+                                Text("End must be after start (same day).").font(.caption).foregroundStyle(.orange)
+                            }
                         }
-                        HStack {
-                            DatePicker("From", selection: Binding(get: { Schedule.date(w.start) }, set: { w.start = Schedule.minutes($0) }), displayedComponents: .hourAndMinute)
-                            DatePicker("to", selection: Binding(get: { Schedule.date(w.end) }, set: { w.end = Schedule.minutes($0) }), displayedComponents: .hourAndMinute)
-                        }
-                        if w.end <= w.start {
-                            Text("End must be after start (same day).").font(.caption).foregroundStyle(.orange)
-                        }
+                        .padding(.vertical, 2)
                     }
-                    .padding(.vertical, 2)
+                    Button("Add another time") { model.settings.scheduleWindows.append(ScheduleWindow()) }
                 }
-                Button("Add another time") { model.settings.scheduleWindows.append(ScheduleWindow()) }
             }
             Section("Transcript copy") {
                 Toggle("Save a copy of the transcript when a session ends", isOn: $model.settings.saveCopy)
@@ -185,6 +195,53 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 460)
         .padding()
+    }
+}
+
+struct PlanningCenterSection: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        if !model.pcoSignedIn {
+            HStack {
+                Button(model.pcoBusy ? "Waiting for the browser…" : "Sign in to Planning Center") { model.pcoSignIn() }
+                    .disabled(model.pcoBusy || !PCOConfig.isConfigured)
+                if model.pcoBusy { ProgressView().controlSize(.small) }
+            }
+            Text(PCOConfig.isConfigured ? "Opens Planning Center in your browser. Only service types and times are read."
+                 : "This build has no Planning Center credentials (see Support/pco.env.example).")
+                .font(.caption).foregroundStyle(.secondary)
+        } else {
+            Picker("Service type", selection: Binding(get: { model.settings.pcoServiceTypeID ?? "" }, set: { model.selectPCOType($0.isEmpty ? nil : $0) })) {
+                Text("Choose…").tag("")
+                ForEach(model.pcoTypes) { Text($0.name).tag($0.id) }
+                // keeps the saved choice visible before the list loads (or if it is offline)
+                if let id = model.settings.pcoServiceTypeID, !model.pcoTypes.contains(where: { $0.id == id }) {
+                    Text(model.settings.pcoServiceTypeName).tag(id)
+                }
+            }
+            Stepper("Start \(model.settings.pcoLeadMinutes) min before the service", value: $model.settings.pcoLeadMinutes, in: 0...120, step: 5)
+            Stepper("Stop \(model.settings.pcoLengthMinutes) min after it starts", value: $model.settings.pcoLengthMinutes, in: 15...300, step: 5)
+            if model.settings.pcoServiceTypeID != nil {
+                let upcoming = model.settings.pcoTimes.filter { Schedule.pcoWindow(model.settings, $0).upperBound > Date() }.prefix(4)
+                if upcoming.isEmpty {
+                    Text(model.pcoBusy ? "Loading service times…" : "No upcoming service times for this service type.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                ForEach(Array(upcoming), id: \.self) { t in
+                    let w = Schedule.pcoWindow(model.settings, t)
+                    Text("\(t.formatted(.dateTime.weekday(.wide).month(.abbreviated).day())): listens \(w.lowerBound.formatted(date: .omitted, time: .shortened))–\(w.upperBound.formatted(date: .omitted, time: .shortened))")
+                        .font(.caption)
+                }
+            }
+            HStack {
+                Button("Refresh times") { Task { await model.refreshPCOTimes() } }
+                    .disabled(model.pcoBusy || model.settings.pcoServiceTypeID == nil)
+                Spacer()
+                Button("Sign out of Planning Center") { model.pcoSignOut() }
+            }
+        }
+        if let e = model.pcoError { Text(e).font(.caption).foregroundStyle(.orange) }
     }
 }
 

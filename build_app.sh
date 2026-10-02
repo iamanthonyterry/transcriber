@@ -19,6 +19,12 @@ cp -R "$SPARKLE" "$APP/Contents/Frameworks/"
 cp Support/icon.icns "$APP/Contents/Resources/"
 sed "s/__VERSION__/$VERSION/; s/__BUILD__/$BUILD/" Support/Info.plist > "$APP/Contents/Info.plist"
 
+# Planning Center OAuth app (optional): Support/pco.env sets PCO_CLIENT_ID and PCO_CLIENT_SECRET. Not committed.
+if [ -f Support/pco.env ]; then
+  set -a; . Support/pco.env; set +a
+  /usr/libexec/PlistBuddy -c "Set :PCOClientID ${PCO_CLIENT_ID:-}" -c "Set :PCOClientSecret ${PCO_CLIENT_SECRET:-}" "$APP/Contents/Info.plist"
+fi
+
 # Sign inside-out: Sparkle's helpers, the framework, then the app.
 S="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
 for item in "$S/XPCServices/"*.xpc "$S/Updater.app" "$S/Autoupdate" "$APP/Contents/Frameworks/Sparkle.framework"; do

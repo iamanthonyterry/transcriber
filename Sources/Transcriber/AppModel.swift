@@ -26,6 +26,11 @@ final class AppModel: ObservableObject {
     @Published var languages: [TranslationLanguage] = []
     /// Languages waiting for the system's download prompt, one at a time.
     @Published var downloadQueue: [String] = []
+    @Published var pcoSignedIn = false
+    @Published var pcoTypes: [PCOServiceType] = []
+    @Published var pcoBusy = false
+    @Published var pcoError: String?
+    private let pco = PCOClient()
     private let translator = Translator()
     private let engine = SpeechEngine()
     private let capture = AudioCapture()
@@ -40,6 +45,7 @@ final class AppModel: ObservableObject {
         refreshDevices()
         loadLanguages()
         updates.model = self
+        Task { @MainActor in await self.pcoStartup() }
         // Resume after a reboot or an update (never pops the "key needed" alert on a fresh install).
         if settings.autoStart && !token.isEmpty { Task { @MainActor in self.start() } }
     }
@@ -94,6 +100,74 @@ final class AppModel: ObservableObject {
             start()
             restarting = false
         }
+    }
+
+    // MARK: Planning Center
+
+    /// Picks up a saved sign-in, then keeps the service times fresh while Planning Center scheduling is on.
+    private func pcoStartup() async {
+        pcoSignedIn = await pco.signedIn
+        if pcoSignedIn { await loadPCOTypes() }
+        while !Task.isCancelled {
+            if settings.pcoOn && pcoSignedIn { await refreshPCOTimes() }
+            try? await Task.sleep(for: .seconds(30 * 60))
+        }
+    }
+
+    func pcoSignIn() {
+        guard !pcoBusy else { return }
+        pcoBusy = true
+        pcoError = nil
+        Task {
+            do {
+                try await pco.signIn()
+                pcoSignedIn = true
+                await loadPCOTypes()
+            } catch { pcoError = error.localizedDescription }
+            pcoBusy = false
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    func pcoSignOut() {
+        Task {
+            await pco.signOut()
+            pcoSignedIn = false
+            pcoTypes = []
+            settings.pcoOn = false  // back to the manual times
+            settings.pcoServiceTypeID = nil
+            settings.pcoServiceTypeName = ""
+            settings.pcoTimes = []
+            saveSettings()
+        }
+    }
+
+    func loadPCOTypes() async {
+        do { pcoTypes = try await pco.serviceTypes(); pcoError = nil } catch { handlePCO(error) }
+    }
+
+    func selectPCOType(_ id: String?) {
+        settings.pcoServiceTypeID = id
+        settings.pcoServiceTypeName = pcoTypes.first { $0.id == id }?.name ?? ""
+        settings.pcoTimes = []
+        saveSettings()
+        Task { await refreshPCOTimes() }
+    }
+
+    func refreshPCOTimes() async {
+        guard let id = settings.pcoServiceTypeID else { return }
+        pcoBusy = true
+        defer { pcoBusy = false }
+        do {
+            settings.pcoTimes = try await pco.serviceTimes(typeID: id)  // the cached times stay if this fails
+            pcoError = nil
+            saveSettings()
+        } catch { handlePCO(error) }
+    }
+
+    private func handlePCO(_ error: Error) {
+        pcoError = error.localizedDescription
+        if case PCOError.notSignedIn = error { pcoSignedIn = false }
     }
 
     // MARK: session transcript

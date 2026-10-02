@@ -14,6 +14,8 @@
 	<key>LSUIElement</key><true/>
 	<key>NSMicrophoneUsageDescription</key><string>Lifepoint Transcriber listens to the sound board to create live captions.</string>
 	<key>NSHighResolutionCapable</key><true/>
+	<key>PCOClientID</key><string>__PCO_CLIENT_ID__</string>
+	<key>PCOClientSecret</key><string>__PCO_CLIENT_SECRET__</string>
 	<key>SUFeedURL</key><string>https://github.com/iamanthonyterry/transcriber/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key><string>IdVQPAGOXjruuLtPzqy1ZTI6lbSyuAm/aXY5V4lx7ws=</string>
 	<key>SUEnableAutomaticChecks</key><true/>

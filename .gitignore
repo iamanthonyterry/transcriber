@@ -5,3 +5,4 @@ dist/
 .env
 .DS_Store
 *.xcodeproj/xcuserdata/
+Support/pco.env

@@ -17,6 +17,12 @@ struct Settings: Codable, Equatable {
     var translateTo: [String] = []  // language codes translated on-device (shown locally, optionally sent)
     var sendTranslations = false    // also send the translations to the website for viewers to pick from
     var autoStart = true           // start listening when the app opens (survives updates and reboots)
+    var pcoOn = false              // schedule from Planning Center service times instead of the manual windows
+    var pcoServiceTypeID: String?
+    var pcoServiceTypeName = ""
+    var pcoLeadMinutes = 15        // start listening this long before a service time
+    var pcoLengthMinutes = 90      // and keep listening this long after it starts
+    var pcoTimes: [Date] = []      // upcoming service start times (cached so it still works offline)
 }
 
 /// One recurring listening window: chosen weekdays between a start and end time (minutes after midnight).
@@ -54,14 +60,20 @@ extension Settings {
         translateTo = try c.decodeIfPresent([String].self, forKey: .translateTo) ?? d.translateTo
         sendTranslations = try c.decodeIfPresent(Bool.self, forKey: .sendTranslations) ?? d.sendTranslations
         autoStart = try c.decodeIfPresent(Bool.self, forKey: .autoStart) ?? d.autoStart
+        pcoOn = try c.decodeIfPresent(Bool.self, forKey: .pcoOn) ?? d.pcoOn
+        pcoServiceTypeID = try c.decodeIfPresent(String.self, forKey: .pcoServiceTypeID)
+        pcoServiceTypeName = try c.decodeIfPresent(String.self, forKey: .pcoServiceTypeName) ?? d.pcoServiceTypeName
+        pcoLeadMinutes = try c.decodeIfPresent(Int.self, forKey: .pcoLeadMinutes) ?? d.pcoLeadMinutes
+        pcoLengthMinutes = try c.decodeIfPresent(Int.self, forKey: .pcoLengthMinutes) ?? d.pcoLengthMinutes
+        pcoTimes = try c.decodeIfPresent([Date].self, forKey: .pcoTimes) ?? d.pcoTimes
     }
 }
 
 enum Keychain {
     private static let service = "church.lifepoint.transcriber"
-    private static let account = "transcriber-key"
+    private static let defaultAccount = "transcriber-key"
 
-    static func read() -> String {
+    static func read(account: String = defaultAccount) -> String {
         let q: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
                                 kSecAttrAccount as String: account, kSecReturnData as String: true]
         var out: AnyObject?
@@ -69,7 +81,7 @@ enum Keychain {
         return String(data: d, encoding: .utf8) ?? ""
     }
 
-    static func write(_ value: String) {
+    static func write(_ value: String, account: String = defaultAccount) {
         let base: [String: Any] = [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
                                    kSecAttrAccount as String: account]
         SecItemDelete(base as CFDictionary)
