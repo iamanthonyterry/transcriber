@@ -12,9 +12,11 @@ final class Sender: @unchecked Sendable {
     private var task: Task<Void, Never>?
     private let lock = NSLock()
     private var _campus: String?
+    private var _church: String?
     private var bad = false
 
     var campus: String? { lock.withLock { _campus } }
+    var church: String? { lock.withLock { _church } }
 
     init(url: String, token: String, dryRun: Bool = false, onStatus: @escaping @Sendable (String) -> Void) {
         self.url = URL(string: url)
@@ -72,7 +74,10 @@ final class Sender: @unchecked Sendable {
         let code = (res as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(code) else { throw SendError.http(code) }
         if text == nil, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let c = j["campus"] as? String {
-            lock.withLock { _campus = c }
+            lock.withLock {
+                _campus = c
+                _church = j["church"] as? String
+            }
         }
     }
 

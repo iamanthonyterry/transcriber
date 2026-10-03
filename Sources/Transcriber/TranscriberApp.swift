@@ -16,7 +16,7 @@ struct TranscriberApp: App {
         MenuBarExtra {
             MenuContent(model: model)
         } label: {
-            MenuLabel(dot: model.statusDot)
+            MenuLabel(tint: model.statusTint)
         }
         .menuBarExtraStyle(.menu)
 
@@ -34,12 +34,28 @@ struct TranscriberApp: App {
 }
 
 struct MenuLabel: View {
-    let dot: String?
+    let tint: NSColor?
+
     var body: some View {
-        HStack(spacing: 2) {
+        // Menu bar icons are templates (always monochrome), so a colored mic has to be a pre-tinted, non-template image.
+        if let tint, let img = Self.mic(tint) {
+            Image(nsImage: img)
+        } else {
             Image(systemName: "mic.fill")
-            if let dot { Text(dot) }
         }
+    }
+
+    private static func mic(_ color: NSColor) -> NSImage? {
+        guard let base = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: nil)?
+            .withSymbolConfiguration(.init(pointSize: 14, weight: .regular)) else { return nil }
+        let img = NSImage(size: base.size, flipped: false) { rect in
+            base.draw(in: rect)
+            color.set()
+            rect.fill(using: .sourceAtop)
+            return true
+        }
+        img.isTemplate = false
+        return img
     }
 }
 
@@ -157,6 +173,23 @@ struct SettingsView: View {
                     Button("Add another time") { model.settings.scheduleWindows.append(ScheduleWindow()) }
                 }
             }
+            Section("Translation") {
+                if model.languages.isEmpty {
+                    Text("Translation needs macOS 26 or newer.").font(.caption).foregroundStyle(.secondary)
+                } else {
+                    ForEach(model.languages) { lang in
+                        Toggle(lang.name, isOn: Binding(get: { model.settings.translateTo.contains(lang.code) }, set: { _ in model.toggleLanguage(lang.code) }))
+                    }
+                    Toggle("Send translations to the website (viewers pick their language)", isOn: Binding(get: { model.settings.sendTranslations }, set: {
+                        model.settings.sendTranslations = $0
+                        model.saveSettings()
+                    }))
+                    .disabled(model.settings.translateTo.isEmpty)
+                }
+                if let note = model.translationNote {
+                    Text(note).font(.caption).foregroundStyle(.orange)
+                }
+            }
             Section("Transcript copy") {
                 Toggle("Save a copy of the transcript when a session ends", isOn: $model.settings.saveCopy)
                 HStack {
@@ -195,6 +228,7 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .frame(width: 460)
         .padding()
+        .modifier(LanguageDownloader(model: model))
     }
 }
 
@@ -255,24 +289,10 @@ struct TranscriptView: View {
                 Circle().fill(model.listening ? .red : (model.running ? .yellow : .gray)).frame(width: 8, height: 8)
                 Text(model.status).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 Spacer()
-                Menu("Translate (\(model.settings.translateTo.count))") {
-                    if model.languages.isEmpty { Text("Needs macOS 26 or newer") }
-                    ForEach(model.languages) { lang in
-                        Toggle(lang.name, isOn: Binding(get: { model.settings.translateTo.contains(lang.code) }, set: { _ in model.toggleLanguage(lang.code) }))
-                    }
-                }
-                .menuStyle(.borderlessButton).fixedSize().font(.caption)
                 Toggle("Keep on top", isOn: $floating).toggleStyle(.checkbox).font(.caption)
                 Button("Clear") { model.lines.removeAll() }.controlSize(.small)
             }
             .padding(.horizontal, 10).padding(.top, 10).padding(.bottom, 6)
-            if !model.settings.translateTo.isEmpty {
-                Toggle("Send translations to the website (viewers pick their language)", isOn: Binding(get: { model.settings.sendTranslations }, set: {
-                    model.settings.sendTranslations = $0
-                    model.saveSettings()
-                })).toggleStyle(.checkbox).font(.caption)
-                    .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.bottom, 4)
-            }
             if let note = model.translationNote {
                 Text(note).font(.caption).foregroundStyle(.orange)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 10).padding(.bottom, 4)
@@ -308,11 +328,10 @@ struct TranscriptView: View {
         }
         .frame(minWidth: 300, minHeight: 160)
         .background(WindowLevelSetter(floating: floating))
-        .modifier(LanguageDownloader(model: model))
     }
 }
 
-/// Shows Apple's "Download language?" prompt for languages picked in the Translate menu (macOS 15+).
+/// Shows Apple's "Download language?" prompt for languages picked in Settings (macOS 15+).
 private struct LanguageDownloader: ViewModifier {
     @ObservedObject var model: AppModel
 

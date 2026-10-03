@@ -50,7 +50,7 @@ final class AppModel: ObservableObject {
         if settings.autoStart && !token.isEmpty { Task { @MainActor in self.start() } }
     }
 
-    var statusDot: String? { listening ? "🔴" : (running ? "🟡" : nil) }
+    var statusTint: NSColor? { listening ? .systemRed : (running ? .systemYellow : nil) }
 
     var channelCount: Int {
         let ch = devices.first { $0.name == settings.device }?.channels ?? max(devices.first?.channels ?? 1, 1)
@@ -270,7 +270,11 @@ final class AppModel: ObservableObject {
 
     func liveURL() -> URL? {
         let base = settings.url.components(separatedBy: "/api/transcript").first ?? settings.url
-        if let c = sender?.campus { return URL(string: "\(base)/live/\(c)") }
+        if let c = sender?.campus {
+            // Pages live under the church's slug; older sites don't send one, and /live/<campus> redirects there.
+            let path = sender?.church.map { "/\($0)/live/\(c)" } ?? "/live/\(c)"
+            return URL(string: base + path)
+        }
         return URL(string: base)
     }
 
