@@ -1,0 +1,54 @@
+{
+  "fill" : {
+    "linear-gradient" : [
+      "display-p3:0.84734,1.00000,0.83260,1.00000",
+      "display-p3:0.96783,0.83208,0.92390,1.00000"
+    ]
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "fill-specializations" : [
+            {
+              "value" : {
+                "solid" : "display-p3:0.11362,0.11362,0.11362,1.00000"
+              }
+            },
+            {
+              "appearance" : "dark",
+              "value" : {
+                "solid" : "display-p3:0.91402,0.91402,0.91402,1.00000"
+              }
+            }
+          ],
+          "glass" : false,
+          "hidden" : false,
+          "image-name" : "transcribe icon.svg",
+          "name" : "transcribe icon",
+          "position" : {
+            "scale" : 3,
+            "translation-in-points" : [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.3
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}

@@ -16,7 +16,14 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/Resources"
 cp "$BIN" "$APP/Contents/MacOS/Transcriber"
 cp -R "$SPARKLE" "$APP/Contents/Frameworks/"
-cp Support/icon.icns "$APP/Contents/Resources/"
+# App icon: compile the Icon Composer file (Liquid Glass Assets.car) plus the pre-rendered .icns fallback.
+ICONTMP="$(mktemp -d)"
+xcrun actool icon/AppIcon.icon --compile "$ICONTMP" --output-format human-readable-text --notices --warnings \
+  --output-partial-info-plist "$ICONTMP/partial.plist" --app-icon AppIcon --include-all-app-icons \
+  --target-device mac --minimum-deployment-target 14.0 --platform macosx >/dev/null
+cp "$ICONTMP/Assets.car" "$APP/Contents/Resources/"
+cp icon/AppIcon.icns "$APP/Contents/Resources/"  # full-size fallback for macOS < 26
+rm -rf "$ICONTMP"
 sed "s/__VERSION__/$VERSION/; s/__BUILD__/$BUILD/" Support/Info.plist > "$APP/Contents/Info.plist"
 
 # Planning Center OAuth app (optional): Support/pco.env sets PCO_CLIENT_ID and PCO_CLIENT_SECRET. Not committed.
