@@ -76,9 +76,11 @@ struct MenuContent: View {
             Text("System default").tag("")
             ForEach(model.devices) { Text("\($0.name) (\($0.channels) ch)").tag($0.name) }
         }
+        .disabled(model.running)
         Picker("Input channel", selection: Binding(get: { model.settings.channel }, set: { model.settings.channel = $0; model.apply() })) {
             ForEach(1...model.channelCount, id: \.self) { Text("Channel \($0)").tag($0) }
         }
+        .disabled(model.running)
         Toggle("Only \(Schedule.summary(model.settings))", isOn: Binding(get: { model.settings.scheduleOn }, set: { model.settings.scheduleOn = $0; model.apply() }))
         Divider()
         Button("Show transcript") {
