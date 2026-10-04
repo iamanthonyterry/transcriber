@@ -41,6 +41,12 @@ final class Sender: @unchecked Sendable {
         continuation.yield(Outgoing(text: text, translations: translations))
     }
 
+    /// Tells the website a new session began so it clears the previous session's text. Best effort.
+    func reset() async {
+        guard !dryRun else { return }
+        try? await post(nil, reset: true)
+    }
+
     /// Tells the website this campus is live. Best effort; never queued.
     func heartbeat() async {
         guard !dryRun else { return }
@@ -61,19 +67,19 @@ final class Sender: @unchecked Sendable {
 
     private enum SendError: Error { case http(Int), badURL }
 
-    private func post(_ text: String?, translations: [String: String] = [:]) async throws {
+    private func post(_ text: String?, translations: [String: String] = [:], reset: Bool = false) async throws {
         guard let url else { throw SendError.badURL }
         var req = URLRequest(url: url, timeoutInterval: 10)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        var body: [String: Any] = text.map { ["text": $0] } ?? ["heartbeat": true]
+        var body: [String: Any] = reset ? ["reset": true] : (text.map { ["text": $0] } ?? ["heartbeat": true])
         if !translations.isEmpty { body["translations"] = translations }
         req.httpBody = try JSONSerialization.data(withJSONObject: body)
         let (data, res) = try await URLSession.shared.data(for: req)
         let code = (res as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(code) else { throw SendError.http(code) }
-        if text == nil, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let c = j["campus"] as? String {
+        if text == nil, !reset, let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any], let c = j["campus"] as? String {
             lock.withLock {
                 _campus = c
                 _church = j["church"] as? String

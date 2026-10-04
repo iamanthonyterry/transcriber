@@ -34,6 +34,9 @@ final class AppModel: ObservableObject {
     private let translator = Translator()
     private let engine = SpeechEngine()
     private let capture = AudioCapture()
+    private let meterCapture = AudioCapture()
+    /// Current input level in dB (about -90 when silent or not listening), shown in Settings.
+    @Published var levelDb: Double = -90
     private var runTask: Task<Void, Never>?
     private var sender: Sender?
     private var heartbeatTask: Task<Void, Never>?
@@ -61,6 +64,7 @@ final class AppModel: ObservableObject {
 
     func start() {
         guard runTask == nil else { return }
+        stopMeter()
         guard !token.isEmpty else {
             let a = NSAlert()
             a.messageText = "Transcriber key needed"
@@ -87,6 +91,23 @@ final class AppModel: ObservableObject {
         status = "Stopped"
         if !restarting { endSession() }
         if let install = pendingUpdate { install() }  // an update was waiting for the service to finish
+    }
+
+    /// Settings' level meter: while transcribing it reads the live capture, otherwise it listens on its own.
+    func startMeter() {
+        guard !running else { return }
+        Task { @MainActor in
+            guard !self.running, await MicPermission.request(), !self.running else { return }
+            let reporter = LevelReporter { db in Task { @MainActor in self.levelDb = db } }
+            let device = self.devices.first { $0.name == self.settings.device }
+            try? self.meterCapture.start(device: device, channel: self.settings.channel,
+                                         onSamples: { reporter.feed($0) }, onInterrupted: {})
+        }
+    }
+
+    func stopMeter() {
+        meterCapture.stop()
+        if !running { levelDb = -90 }
     }
 
     func toggle() { running ? stop() : start() }
@@ -172,9 +193,14 @@ final class AppModel: ObservableObject {
 
     // MARK: session transcript
 
+    /// Set when a session begins; the next chance we get, the website is told to clear the old text.
+    private var resetPending = false
+
     private func beginSession() {
+        resetPending = true
         sessionLog = []
         lines = []
+        lastText = ""
         sessionStart = Date()
     }
 
@@ -280,6 +306,12 @@ final class AppModel: ObservableObject {
 
     // MARK: running
 
+    private func sendResetIfNeeded(_ sender: Sender) async {
+        guard resetPending else { return }
+        resetPending = false
+        await sender.reset()
+    }
+
     private func run() async {
         do {
             if !(await engine.isLoaded) {
@@ -299,6 +331,7 @@ final class AppModel: ObservableObject {
 
         let sender = Sender(url: settings.url, token: token) { s in Task { @MainActor in self.status = s } }
         self.sender = sender
+        await sendResetIfNeeded(sender)
         let (phrases, phraseSink) = AsyncStream.makeStream(of: [Float].self, bufferingPolicy: .bufferingNewest(8))  // falls behind -> drops oldest
         let corrections = settings.corrections
         let worker = Task {
@@ -331,7 +364,10 @@ final class AppModel: ObservableObject {
             if settings.scheduleOn && !Schedule.inWindow(settings) {
                 status = "Waiting for the schedule"
                 while !Task.isCancelled && !(settings.scheduleOn ? Schedule.inWindow(settings) : true) { try? await Task.sleep(for: .seconds(1)) }
-                if !Task.isCancelled { beginSession() }  // a new window is a new transcript
+                if !Task.isCancelled {  // a new window is a new transcript
+                    beginSession()
+                    await sendResetIfNeeded(sender)
+                }
                 continue
             }
             if await listenUntilDone(phraseSink) == false { return }
@@ -344,9 +380,13 @@ final class AppModel: ObservableObject {
         let queue = DispatchQueue(label: "audio.segment")
         let device = devices.first { $0.name == settings.device }
         let interrupted = Interrupt()
+        let reporter = LevelReporter { db in Task { @MainActor in self.levelDb = db } }
         do {
             try capture.start(device: device, channel: settings.channel,
-                              onSamples: { samples in queue.async { segmenter.feed(samples: samples).forEach { sink.yield($0) } } },
+                              onSamples: { samples in
+                                  reporter.feed(samples)
+                                  queue.async { segmenter.feed(samples: samples).forEach { sink.yield($0) } }
+                              },
                               onInterrupted: { interrupted.flag = true })
         } catch {
             fail("Error: \(error.localizedDescription)")
@@ -360,6 +400,7 @@ final class AppModel: ObservableObject {
         let windowEnded = settings.scheduleOn && !Schedule.inWindow(settings)
         capture.stop()
         listening = false
+        levelDb = -90
         queue.sync { if let tail = segmenter.flush() { sink.yield(tail) } }
         if windowEnded && !Task.isCancelled {
             try? await Task.sleep(for: .seconds(4))  // let the last phrase finish transcribing

@@ -130,6 +130,23 @@ final class AudioCapture {
     }
 }
 
+/// Turns the capture's sample callback into ~20 updates a second of the level in dB (same scale as the sensitivity slider).
+final class LevelReporter: @unchecked Sendable {
+    private var last = Date.distantPast
+    private let handler: @Sendable (Double) -> Void
+    init(_ handler: @escaping @Sendable (Double) -> Void) { self.handler = handler }
+
+    func feed(_ samples: [Float]) {
+        let now = Date()
+        guard now.timeIntervalSince(last) >= 0.05, !samples.isEmpty else { return }
+        last = now
+        var sum: Float = 0
+        for x in samples { sum += x * x }
+        let db = Double(20 * log10(sqrt(sum / Float(samples.count)) + 1e-9))
+        DispatchQueue.main.async { [handler] in handler(db) }
+    }
+}
+
 enum MicPermission {
     static func request() async -> Bool {
         switch AVCaptureDevice.authorizationStatus(for: .audio) {

@@ -210,6 +210,7 @@ struct SettingsView: View {
                     .lineLimit(3...6)
                 Text("One per line, written heard => correct (e.g. Life Point => Lifepoint). Fixes names and places Whisper keeps getting wrong.")
                     .font(.caption).foregroundStyle(.secondary)
+                LevelMeter(level: model.levelDb, threshold: model.settings.minDb)
                 HStack {
                     Slider(value: $model.settings.minDb, in: -65...(-30), step: 1)
                     Text("\(Int(model.settings.minDb)) dB").monospacedDigit().frame(width: 60, alignment: .trailing)
@@ -229,6 +230,42 @@ struct SettingsView: View {
         .frame(width: 460)
         .padding()
         .modifier(LanguageDownloader(model: model))
+        .onAppear { model.startMeter() }
+        .onDisappear { model.stopMeter() }
+    }
+}
+
+/// Live input level with a tick where the sensitivity threshold sits (speech must rise above it).
+struct LevelMeter: View {
+    let level: Double
+    let threshold: Double
+    private let range = -65.0...0.0
+
+    private func fraction(_ db: Double) -> Double {
+        min(max((db - range.lowerBound) / (range.upperBound - range.lowerBound), 0), 1)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack {
+                Text("Input level")
+                Spacer()
+                Text(level > -80 ? "\(Int(level)) dB" : "—").monospacedDigit().foregroundStyle(.secondary)
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(.quaternary)
+                    Capsule()
+                        .fill(level > threshold ? Color.green : Color.secondary)
+                        .frame(width: max(geo.size.width * fraction(level), 0))
+                        .animation(.linear(duration: 0.06), value: level)
+                    Rectangle().fill(.primary).frame(width: 2)
+                        .offset(x: geo.size.width * fraction(threshold) - 1)
+                }
+            }
+            .frame(height: 8)
+            .clipShape(Capsule())
+        }
     }
 }
 
