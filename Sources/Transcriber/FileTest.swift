@@ -27,6 +27,20 @@ enum FileTest {
         }
     }
 
+    static func levelCheck(path: String) {
+        do {
+            let check = LevelCheck()
+            check.begin()
+            check.feed(try load(path))
+            let r = check.finish()
+            print("\(r.title): speech \(Int(r.speechDb)) dB, background \(Int(r.noiseDb)) dB, peak \(Int(r.peakDb)) dB\n\(r.advice)")
+            exit(0)
+        } catch {
+            print("error:", error)
+            exit(1)
+        }
+    }
+
     private static func load(_ path: String) throws -> [Float] {
         let file = try AVAudioFile(forReading: URL(fileURLWithPath: path))
         let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Double(sampleRate), channels: 1, interleaved: false)!

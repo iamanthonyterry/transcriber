@@ -58,7 +58,7 @@ final class Sender: @unchecked Sendable {
             }
         } catch let SendError.http(code) where code == 400 || code == 401 {
             bad = true
-            onStatus("Website rejected us — check the key in Website settings")
+            onStatus("Website rejected us — sign in again in Website settings")
         } catch {
             bad = true
             onStatus("Can't reach the website — check the address in Website settings")

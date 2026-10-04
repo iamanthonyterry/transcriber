@@ -26,6 +26,9 @@ final class AppModel: ObservableObject {
     @Published var languages: [TranslationLanguage] = []
     /// Languages waiting for the system's download prompt, one at a time.
     @Published var downloadQueue: [String] = []
+    @Published var signInBusy = false
+    @Published var signInError: String?
+    private var signInTask: Task<Void, Never>?
     @Published var pcoSignedIn = false
     @Published var pcoTypes: [PCOServiceType] = []
     @Published var pcoBusy = false
@@ -35,6 +38,9 @@ final class AppModel: ObservableObject {
     private let engine = SpeechEngine()
     private let capture = AudioCapture()
     private let meterCapture = AudioCapture()
+    private let levelCheck = LevelCheck()
+    @Published var checkingLevel = false
+    @Published var levelResult: LevelCheckResult?
     /// Current input level in dB (about -90 when silent or not listening), shown in Settings.
     @Published var levelDb: Double = -90
     private var runTask: Task<Void, Never>?
@@ -67,8 +73,8 @@ final class AppModel: ObservableObject {
         stopMeter()
         guard !token.isEmpty else {
             let a = NSAlert()
-            a.messageText = "Transcriber key needed"
-            a.informativeText = "Open “Website settings…” and enter the site address and this campus’s key (made in the website’s admin page) first."
+            a.messageText = "Sign in to the website first"
+            a.informativeText = "Open “Website settings…” and sign in with the website to choose which campus this Mac sends to."
             NSApp.activate(ignoringOtherApps: true)
             a.runModal()
             return
@@ -101,7 +107,7 @@ final class AppModel: ObservableObject {
             let reporter = LevelReporter { db in Task { @MainActor in self.levelDb = db } }
             let device = self.devices.first { $0.name == self.settings.device }
             try? self.meterCapture.start(device: device, channel: self.settings.channel,
-                                         onSamples: { reporter.feed($0) }, onInterrupted: {})
+                                         onSamples: { reporter.feed($0); self.levelCheck.feed($0) }, onInterrupted: {})
         }
     }
 
@@ -110,9 +116,55 @@ final class AppModel: ObservableObject {
         if !running { levelDb = -90 }
     }
 
+    /// Listens for a few seconds (on the live capture if transcribing, else on its own) and judges the level.
+    func checkLevel() {
+        guard !checkingLevel else { return }
+        checkingLevel = true
+        levelResult = nil
+        levelCheck.begin()
+        startMeter()
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(8))
+            self.levelResult = self.levelCheck.finish()
+            self.checkingLevel = false
+        }
+    }
+
     func toggle() { running ? stop() : start() }
 
     /// Called after a setting changes: save, and restart if running so it takes effect.
+    /// The website's address without the API path (the same site the key belongs to).
+    var siteBase: String { settings.url.components(separatedBy: "/api/transcript").first ?? settings.url }
+
+    /// Signs in through the website in the browser, then uses the campus the admin picks there.
+    func signInWithWebsite() {
+        guard signInTask == nil else { return }
+        signInBusy = true
+        signInError = nil
+        signInTask = Task { @MainActor in
+            defer { signInBusy = false; signInTask = nil }
+            do {
+                let c = try await WebSignIn().run(site: siteBase)
+                token = c.key
+                settings.connectedTo = c.name.isEmpty ? c.campus : c.name
+                apply()
+                NSApp.activate(ignoringOtherApps: true)
+            } catch is CancellationError {
+            } catch {
+                signInError = error.localizedDescription
+            }
+        }
+    }
+
+    func cancelSignIn() { signInTask?.cancel() }
+
+    func disconnect() {
+        token = ""
+        settings.connectedTo = ""
+        if running { stop() }
+        SettingsStore.save(settings, token: token)
+    }
+
     func apply() {
         SettingsStore.save(settings, token: token)
         if running {
@@ -295,7 +347,7 @@ final class AppModel: ObservableObject {
     }
 
     func liveURL() -> URL? {
-        let base = settings.url.components(separatedBy: "/api/transcript").first ?? settings.url
+        let base = siteBase
         if let c = sender?.campus {
             // Pages live under the church's slug; older sites don't send one, and /live/<campus> redirects there.
             let path = sender?.church.map { "/\($0)/live/\(c)" } ?? "/live/\(c)"
@@ -385,6 +437,7 @@ final class AppModel: ObservableObject {
             try capture.start(device: device, channel: settings.channel,
                               onSamples: { samples in
                                   reporter.feed(samples)
+                                  self.levelCheck.feed(samples)
                                   queue.async { segmenter.feed(samples: samples).forEach { sink.yield($0) } }
                               },
                               onInterrupted: { interrupted.flag = true })

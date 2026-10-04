@@ -10,6 +10,9 @@ struct TranscriberApp: App {
         if let i = CommandLine.arguments.firstIndex(of: "--transcribe-file"), i + 1 < CommandLine.arguments.count {
             FileTest.run(path: CommandLine.arguments[i + 1])  // dev/testing: print phrases from an audio file, then exit
         }
+        if let i = CommandLine.arguments.firstIndex(of: "--level-check"), i + 1 < CommandLine.arguments.count {
+            FileTest.levelCheck(path: CommandLine.arguments[i + 1])  // dev/testing: judge an audio file's level, then exit
+        }
     }
 
     var body: some Scene {
@@ -113,10 +116,32 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            TextField("Transcript address", text: $model.settings.url)
-            SecureField("Campus key", text: $model.token)
-            Text("The key comes from this campus’s page in the website’s admin area. It decides which campus this Mac feeds.")
-                .font(.caption).foregroundStyle(.secondary)
+            Section("Website") {
+                LabeledContent("Sending to") {
+                    Text(model.token.isEmpty ? "Not connected" : (model.settings.connectedTo.isEmpty ? "A campus (key entered by hand)" : model.settings.connectedTo))
+                        .foregroundStyle(model.token.isEmpty ? .secondary : .primary)
+                }
+                HStack {
+                    Button(model.token.isEmpty ? "Sign in with website…" : "Change campus…") { model.signInWithWebsite() }
+                        .disabled(model.signInBusy)
+                    if model.signInBusy {
+                        ProgressView().controlSize(.small)
+                        Text("Finish in your browser").font(.caption).foregroundStyle(.secondary)
+                        Button("Cancel") { model.cancelSignIn() }
+                    }
+                    Spacer()
+                    if !model.token.isEmpty && !model.signInBusy { Button("Disconnect", role: .destructive) { model.disconnect() } }
+                }
+                if let e = model.signInError { Text(e).font(.caption).foregroundStyle(.orange) }
+                Text("Sign in with the same email as the website’s admin, then pick the campus this Mac’s transcript goes to.")
+                    .font(.caption).foregroundStyle(.secondary)
+                DisclosureGroup("Advanced") {
+                    TextField("Transcript address", text: $model.settings.url)
+                    SecureField("Campus key", text: $model.token)
+                    Text("Only needed to point at a different site or to paste a campus key by hand (from the campus’s page in the website’s admin).")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
             Section("Behavior") {
                 Toggle("Start listening when the app opens", isOn: $model.settings.autoStart)
                 Toggle("Open at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
@@ -216,6 +241,22 @@ struct SettingsView: View {
                     Text("\(Int(model.settings.minDb)) dB").monospacedDigit().frame(width: 60, alignment: .trailing)
                 }
                 Text("Hears noise as speech? Raise this (try −42). Misses quiet speech? Lower it.").font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Button(model.checkingLevel ? "Listening…" : "Check audio level") { model.checkLevel() }
+                        .disabled(model.checkingLevel)
+                    if model.checkingLevel { Text("Speak normally for 8 seconds").font(.caption).foregroundStyle(.secondary) }
+                }
+                if let r = model.levelResult {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Label(r.title, systemImage: r.isOK ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                            .foregroundStyle(r.isOK ? Color.green : Color.orange)
+                        Text(r.advice).font(.caption).foregroundStyle(.secondary)
+                        if r.verdict != .noSignal {
+                            Text("Speech \(Int(r.speechDb)) dB · background \(Int(r.noiseDb)) dB · peak \(Int(r.peakDb)) dB")
+                                .font(.caption2).monospacedDigit().foregroundStyle(.tertiary)
+                        }
+                    }
+                }
             }
             HStack {
                 Spacer()

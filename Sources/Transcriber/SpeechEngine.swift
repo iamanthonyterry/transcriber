@@ -46,15 +46,29 @@ actor SpeechEngine {
     func text(for audio: [Float], corrections: String) async throws -> String {
         guard let kit else { return "" }
         let options = DecodingOptions(
-            task: .transcribe, language: "en", temperature: 0, skipSpecialTokens: true, withoutTimestamps: true,
-            compressionRatioThreshold: 2.4, logProbThreshold: -1.0, noSpeechThreshold: 0.6)
-        let results: [TranscriptionResult] = try await kit.transcribe(audioArray: audio, decodeOptions: options)
+            task: .transcribe, language: "en", temperature: 0, temperatureFallbackCount: 2, skipSpecialTokens: true, withoutTimestamps: true,
+            suppressBlank: true, compressionRatioThreshold: 2.4, logProbThreshold: -1.0, noSpeechThreshold: 0.6)
+        let results: [TranscriptionResult] = try await kit.transcribe(audioArray: Self.normalized(audio), decodeOptions: options)
+        // Whisper's own rule: only treat a segment as silence when it is both "no speech" and low confidence.
         let parts = results.flatMap(\.segments)
-            .filter { $0.noSpeechProb < 0.6 && $0.avgLogprob > -1.2 }
+            .filter { !($0.noSpeechProb > 0.6 && $0.avgLogprob < -1.0) && $0.avgLogprob > -1.8 }
             .map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
         let text = parts.joined(separator: " ").trimmingCharacters(in: .whitespaces)
-        return Self.hallucinations.contains(text.lowercased()) ? "" : Self.correct(text, with: corrections)
+        if Self.hallucinations.contains(text.lowercased()) { return "" }
+        return Self.correct(text, with: corrections)
+    }
+
+    /// Brings a quiet feed up to a steady level (Whisper degrades on low-level audio) without clipping.
+    static func normalized(_ audio: [Float], targetRMS: Float = 0.07, maxGain: Float = 30) -> [Float] {
+        guard !audio.isEmpty else { return audio }
+        var sum: Float = 0, peak: Float = 0
+        for x in audio { sum += x * x; peak = max(peak, abs(x)) }
+        let rms = (sum / Float(audio.count)).squareRoot()
+        guard rms > 1e-5, peak > 0 else { return audio }
+        let gain = min(maxGain, targetRMS / rms, 0.95 / peak)
+        guard gain > 1.05 else { return audio }  // never turn loud audio down
+        return audio.map { $0 * gain }
     }
 
     /// "heard => correct" lines, matched whole-word and case-insensitively.

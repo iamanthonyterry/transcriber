@@ -5,7 +5,8 @@ let defaultCorrections = "LifePoint => Lifepoint\nLife Point => Lifepoint"
 
 /// User settings. Everything except the key lives in UserDefaults; the key is in the Keychain.
 struct Settings: Codable, Equatable {
-    var url = "http://localhost:3000/api/transcript"
+    var url = "https://churchlandingpage.rosesashumans.com/api/transcript"
+    var connectedTo = ""           // "Church · Campus" shown after signing in through the website (empty = key typed by hand)
     var device: String?            // nil = system default
     var channel = 1
     var corrections = defaultCorrections  // one "heard => correct" per line, applied to every phrase
@@ -42,6 +43,7 @@ extension Settings {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let d = Settings()
         url = try c.decodeIfPresent(String.self, forKey: .url) ?? d.url
+        connectedTo = try c.decodeIfPresent(String.self, forKey: .connectedTo) ?? d.connectedTo
         device = try c.decodeIfPresent(String.self, forKey: .device)
         channel = try c.decodeIfPresent(Int.self, forKey: .channel) ?? d.channel
         corrections = try c.decodeIfPresent(String.self, forKey: .corrections) ?? d.corrections
