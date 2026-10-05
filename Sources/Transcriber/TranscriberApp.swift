@@ -362,6 +362,14 @@ struct PlanningCenterSection: View {
 struct TranscriptView: View {
     @ObservedObject var model: AppModel
     @State private var floating = false
+    @State private var shown = ""   // "" = original language, otherwise a translation code
+
+    private var choices: [String] { [""] + model.settings.translateTo }
+    private var current: String { choices.contains(shown) ? shown : "" }
+
+    private func name(_ code: String) -> String {
+        code.isEmpty ? "English" : (model.languages.first { $0.code == code }?.name ?? code)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -369,6 +377,12 @@ struct TranscriptView: View {
                 Circle().fill(model.listening ? .red : (model.running ? .yellow : .gray)).frame(width: 8, height: 8)
                 Text(model.status).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 Spacer()
+                if choices.count > 1 {
+                    Picker("Language", selection: Binding(get: { current }, set: { shown = $0 })) {
+                        ForEach(choices, id: \.self) { Text(name($0)).tag($0) }
+                    }
+                    .pickerStyle(.segmented).labelsHidden().fixedSize()
+                }
                 Toggle("Keep on top", isOn: $floating).toggleStyle(.checkbox).font(.caption)
                 Button("Clear") { model.lines.removeAll() }.controlSize(.small)
             }
@@ -387,11 +401,12 @@ struct TranscriptView: View {
                         ForEach(model.lines) { line in
                             HStack(alignment: .firstTextBaseline, spacing: 8) {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(line.text).textSelection(.enabled)
-                                    ForEach(model.settings.translateTo, id: \.self) { code in
-                                        if let t = line.translations[code] {
-                                            Text(t).foregroundStyle(.blue).textSelection(.enabled)
-                                        }
+                                    if current.isEmpty {
+                                        Text(line.text).textSelection(.enabled)
+                                    } else if let t = line.translations[current] {
+                                        Text(t).textSelection(.enabled)
+                                    } else {
+                                        Text(line.text).foregroundStyle(.secondary).textSelection(.enabled)
                                     }
                                 }
                             }
