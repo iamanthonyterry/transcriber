@@ -232,6 +232,33 @@ struct SettingsView: View {
                 Text("A session ends when you stop transcribing, quit, or the schedule’s end time passes. The whole session is kept (Clear only empties the window).")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section("OSC") {
+                Toggle("Send OSC for the selected audio input (\(model.settings.device ?? "System default"))",
+                       isOn: Binding(get: { model.oscEnabledForDevice }, set: { model.setOSC($0, forDevice: model.settings.device) }))
+                HStack {
+                    TextField("Send to", text: $model.settings.oscHost)
+                    TextField("Port", value: $model.settings.oscPort, format: .number.grouping(.never)).frame(width: 70)
+                }
+                ForEach($model.settings.oscRules) { $r in
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            TextField("When I say", text: $r.phrase)
+                            Button("Test") { model.sendOSC(r) }
+                            Button(role: .destructive) {
+                                model.settings.oscRules.removeAll { $0.id == r.id }
+                            } label: { Image(systemName: "trash") }
+                        }
+                        HStack {
+                            TextField("Address", text: $r.address)
+                            TextField("Value (optional)", text: $r.argument).frame(width: 130)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                Button("Add a phrase") { model.settings.oscRules.append(OSCRule()) }
+                Text("Each audio input has its own switch: pick an input, then turn this on or off. A phrase matches whole words, ignoring case and punctuation. The value can be a whole number, a decimal, or text; leave it empty to send no value.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("Tuning") {
                 TextField("Corrections", text: $model.settings.corrections, axis: .vertical)
                     .lineLimit(3...6)

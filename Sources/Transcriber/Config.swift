@@ -24,6 +24,10 @@ struct Settings: Codable, Equatable {
     var pcoLeadMinutes = 15        // start listening this long before a service time
     var pcoLengthMinutes = 90      // and keep listening this long after it starts
     var pcoTimes: [Date] = []      // upcoming service start times (cached so it still works offline)
+    var oscHost = "127.0.0.1"      // where OSC messages go (QLab, ProPresenter, a lighting desk…)
+    var oscPort = 53000
+    var oscRules: [OSCRule] = []   // phrase -> OSC message
+    var oscDevices: [String] = []  // audio inputs that send OSC; "" stands for the system default input
 }
 
 /// One recurring listening window: chosen weekdays between a start and end time (minutes after midnight).
@@ -68,6 +72,10 @@ extension Settings {
         pcoLeadMinutes = try c.decodeIfPresent(Int.self, forKey: .pcoLeadMinutes) ?? d.pcoLeadMinutes
         pcoLengthMinutes = try c.decodeIfPresent(Int.self, forKey: .pcoLengthMinutes) ?? d.pcoLengthMinutes
         pcoTimes = try c.decodeIfPresent([Date].self, forKey: .pcoTimes) ?? d.pcoTimes
+        oscHost = try c.decodeIfPresent(String.self, forKey: .oscHost) ?? d.oscHost
+        oscPort = try c.decodeIfPresent(Int.self, forKey: .oscPort) ?? d.oscPort
+        oscRules = try c.decodeIfPresent([OSCRule].self, forKey: .oscRules) ?? d.oscRules
+        oscDevices = try c.decodeIfPresent([String].self, forKey: .oscDevices) ?? d.oscDevices
     }
 }
 

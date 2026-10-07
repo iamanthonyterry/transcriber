@@ -24,6 +24,7 @@ A Mac that was set up with the old Python app picks up its settings automaticall
 - **Website settings…**: website sign-in / campus, *Start listening when the app opens*, *Open at login*, and tuning:
   - **Corrections** (`heard => correct`, one per line) fix names and places Whisper keeps misspelling, e.g. `Life Point => Lifepoint`.
   - **Noise gate** (dB): hears noise as speech? Raise it (try −42). Misses quiet speech? Lower it.
+  - **OSC**: send an OSC message (UDP, e.g. to QLab on port 53000) when a phrase is heard. Each audio input has its own on/off switch; pick the input in the menu, then toggle it in Settings.
 - Best accuracy comes from a clean feed of just the speaker's mic channel from the board, not a room mic, and not during music.
 
 For the Mac mini, turn on *Start listening when the app opens* and *Open at login*, and in System Settings → Energy enable "Prevent automatic sleeping". Then it comes back by itself after reboots and updates.

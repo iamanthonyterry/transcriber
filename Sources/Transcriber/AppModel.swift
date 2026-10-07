@@ -37,6 +37,7 @@ final class AppModel: ObservableObject {
     private let translator = Translator()
     private let engine = SpeechEngine()
     private let capture = AudioCapture()
+    private let osc = OSCSender()
     private let meterCapture = AudioCapture()
     private let levelCheck = LevelCheck()
     @Published var checkingLevel = false
@@ -346,6 +347,26 @@ final class AppModel: ObservableObject {
         sessionLog.append(line)
     }
 
+    /// Whether the audio input currently chosen sends OSC (each input has its own switch).
+    var oscEnabledForDevice: Bool { settings.oscDevices.contains(settings.device ?? "") }
+
+    func setOSC(_ on: Bool, forDevice device: String?) {
+        let key = device ?? ""
+        settings.oscDevices.removeAll { $0 == key }
+        if on { settings.oscDevices.append(key) }
+        saveSettings()
+    }
+
+    /// Sends the OSC message of every rule whose phrase was just heard (when this input has OSC switched on).
+    private func fireOSC(for text: String) {
+        guard oscEnabledForDevice else { return }
+        for rule in OSC.matches(settings.oscRules, in: text) { sendOSC(rule) }
+    }
+
+    func sendOSC(_ rule: OSCRule) {
+        osc.send(rule, host: settings.oscHost, port: settings.oscPort)
+    }
+
     func liveURL() -> URL? {
         let base = siteBase
         if let c = sender?.campus {
@@ -390,6 +411,7 @@ final class AppModel: ObservableObject {
             for await audio in phrases {
                 if let text = try? await engine.text(for: audio, corrections: corrections), !text.isEmpty {
                     let (targets, forward) = await MainActor.run { (self.settings.translateTo, self.settings.sendTranslations) }
+                    await MainActor.run { self.fireOSC(for: text) }  // before translating, so cues aren't delayed
                     guard !targets.isEmpty else {
                         sender.send(text)
                         await MainActor.run { self.show(text, translations: [:]) }
