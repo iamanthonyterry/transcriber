@@ -72,15 +72,12 @@ struct MenuContent: View {
         Divider()
         Button(model.running ? "Stop transcribing" : "Start transcribing") { model.toggle() }
         Divider()
-        Picker("Audio input", selection: Binding(get: { model.settings.device ?? "" }, set: { model.settings.device = $0.isEmpty ? nil : $0; model.settings.channel = 1; model.apply() })) {
-            Text("System default").tag("")
-            ForEach(model.devices) { Text("\($0.name) (\($0.channels) ch)").tag($0.name) }
+        ForEach($model.settings.inputs) { $input in
+            Menu(model.inputTitle(input)) {
+                InputPickers(model: model, input: $input)
+            }
+            .disabled(model.running)
         }
-        .disabled(model.running)
-        Picker("Input channel", selection: Binding(get: { model.settings.channel }, set: { model.settings.channel = $0; model.apply() })) {
-            ForEach(1...model.channelCount, id: \.self) { Text("Channel \($0)").tag($0) }
-        }
-        .disabled(model.running)
         Toggle("Only \(Schedule.summary(model.settings))", isOn: Binding(get: { model.settings.scheduleOn }, set: { model.settings.scheduleOn = $0; model.apply() }))
         Divider()
         Button("Show transcript") {
@@ -110,6 +107,26 @@ struct MenuContent: View {
         }
         Divider()
         Button("Quit") { model.stop(); NSApp.terminate(nil) }
+    }
+}
+
+/// Device and channel pickers for one audio input (used in the menu bar and in Settings).
+struct InputPickers: View {
+    @ObservedObject var model: AppModel
+    @Binding var input: AudioInput
+
+    var body: some View {
+        Picker("Audio input", selection: Binding(get: { input.device ?? "" }, set: { input.device = $0.isEmpty ? nil : $0; input.channel = 1; model.apply() })) {
+            Text("System default").tag("")
+            ForEach(model.devices) { Text("\($0.name) (\($0.channels) ch)").tag($0.name) }
+            // keeps a saved input visible while its device is unplugged
+            if let d = input.device, !model.devices.contains(where: { $0.name == d }) { Text("\(d) (not connected)").tag(d) }
+        }
+        .disabled(model.running)
+        Picker("Channel", selection: Binding(get: { input.channel }, set: { input.channel = $0; model.apply() })) {
+            ForEach(1...model.channelCount(for: input), id: \.self) { Text("Channel \($0)").tag($0) }
+        }
+        .disabled(model.running)
     }
 }
 
@@ -232,9 +249,30 @@ struct SettingsView: View {
                 Text("A session ends when you stop transcribing, quit, or the schedule’s end time passes. The whole session is kept (Clear only empties the window).")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            Section("Audio inputs") {
+                ForEach($model.settings.inputs) { $input in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            InputPickers(model: model, input: $input)
+                            Spacer()
+                            if model.settings.inputs.count > 1 {
+                                Button(role: .destructive) {
+                                    model.settings.inputs.removeAll { $0.id == input.id }
+                                } label: { Image(systemName: "trash") }
+                            }
+                        }
+                        HStack {
+                            Toggle("Send to website", isOn: $input.sendToSite)
+                            Toggle("Trigger OSC", isOn: $input.triggerOSC)
+                        }
+                    }
+                    .padding(.vertical, 2)
+                }
+                Button("Add an input") { model.settings.inputs.append(AudioInput(sendToSite: false, triggerOSC: true)) }
+                Text("Every input is listened to at once. “Send to website” puts its speech in the transcript; “Trigger OSC” runs the phrases below on it. An input can do both. The level meter and sensitivity below follow the first input that sends to the website.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Section("OSC") {
-                Toggle("Send OSC for the selected audio input (\(model.settings.device ?? "System default"))",
-                       isOn: Binding(get: { model.oscEnabledForDevice }, set: { model.setOSC($0, forDevice: model.settings.device) }))
                 HStack {
                     TextField("Send to", text: $model.settings.oscHost)
                     TextField("Port", value: $model.settings.oscPort, format: .number.grouping(.never)).frame(width: 70)
@@ -256,7 +294,7 @@ struct SettingsView: View {
                     .padding(.vertical, 2)
                 }
                 Button("Add a phrase") { model.settings.oscRules.append(OSCRule()) }
-                Text("Each audio input has its own switch: pick an input, then turn this on or off. A phrase matches whole words, ignoring case and punctuation. The value can be a whole number, a decimal, or text; leave it empty to send no value.")
+                Text("Only inputs with “Trigger OSC” on send these. A phrase matches whole words, ignoring case and punctuation. The value can be a whole number, a decimal, or text; leave it empty to send no value.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Tuning") {

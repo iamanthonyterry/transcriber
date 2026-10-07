@@ -7,8 +7,7 @@ let defaultCorrections = "LifePoint => Lifepoint\nLife Point => Lifepoint"
 struct Settings: Codable, Equatable {
     var url = "https://churchlandingpage.rosesashumans.com/api/transcript"
     var connectedTo = ""           // "Church · Campus" shown after signing in through the website (empty = key typed by hand)
-    var device: String?            // nil = system default
-    var channel = 1
+    var inputs = [AudioInput()]    // every audio input being listened to
     var corrections = defaultCorrections  // one "heard => correct" per line, applied to every phrase
     var minDb = -50.0
     var scheduleOn = false
@@ -27,7 +26,15 @@ struct Settings: Codable, Equatable {
     var oscHost = "127.0.0.1"      // where OSC messages go (QLab, ProPresenter, a lighting desk…)
     var oscPort = 53000
     var oscRules: [OSCRule] = []   // phrase -> OSC message
-    var oscDevices: [String] = []  // audio inputs that send OSC; "" stands for the system default input
+}
+
+/// One audio input (a device and one of its channels) and what its speech is used for.
+struct AudioInput: Codable, Equatable, Identifiable, Sendable {
+    var id = UUID()
+    var device: String?       // nil = system default
+    var channel = 1
+    var sendToSite = true     // transcript goes to the website and the local window
+    var triggerOSC = false    // phrases heard here fire the OSC rules
 }
 
 /// One recurring listening window: chosen weekdays between a start and end time (minutes after midnight).
@@ -39,7 +46,7 @@ struct ScheduleWindow: Codable, Equatable, Identifiable {
     var end = 12 * 60 + 30
 }
 
-private enum LegacyKeys: String, CodingKey { case scheduleDays, scheduleStart, scheduleEnd }
+private enum LegacyKeys: String, CodingKey { case scheduleDays, scheduleStart, scheduleEnd, device, channel, oscDevices }
 
 extension Settings {
     /// Missing keys (settings saved by an older version) fall back to defaults instead of resetting everything.
@@ -48,8 +55,15 @@ extension Settings {
         let d = Settings()
         url = try c.decodeIfPresent(String.self, forKey: .url) ?? d.url
         connectedTo = try c.decodeIfPresent(String.self, forKey: .connectedTo) ?? d.connectedTo
-        device = try c.decodeIfPresent(String.self, forKey: .device)
-        channel = try c.decodeIfPresent(Int.self, forKey: .channel) ?? d.channel
+        if let list = try c.decodeIfPresent([AudioInput].self, forKey: .inputs), !list.isEmpty {
+            inputs = list
+        } else if let old = try? decoder.container(keyedBy: LegacyKeys.self) {
+            // older versions had a single input
+            let device = try old.decodeIfPresent(String.self, forKey: .device)
+            let osc = try old.decodeIfPresent([String].self, forKey: .oscDevices) ?? []
+            inputs = [AudioInput(device: device, channel: try old.decodeIfPresent(Int.self, forKey: .channel) ?? 1,
+                                 triggerOSC: osc.contains(device ?? ""))]
+        }
         corrections = try c.decodeIfPresent(String.self, forKey: .corrections) ?? d.corrections
         minDb = try c.decodeIfPresent(Double.self, forKey: .minDb) ?? d.minDb
         scheduleOn = try c.decodeIfPresent(Bool.self, forKey: .scheduleOn) ?? d.scheduleOn
@@ -75,7 +89,6 @@ extension Settings {
         oscHost = try c.decodeIfPresent(String.self, forKey: .oscHost) ?? d.oscHost
         oscPort = try c.decodeIfPresent(Int.self, forKey: .oscPort) ?? d.oscPort
         oscRules = try c.decodeIfPresent([OSCRule].self, forKey: .oscRules) ?? d.oscRules
-        oscDevices = try c.decodeIfPresent([String].self, forKey: .oscDevices) ?? d.oscDevices
     }
 }
 
@@ -125,8 +138,7 @@ enum SettingsStore {
             .appendingPathComponent("Library/Application Support/LifepointTranscriber/config.json")
         if let d = try? Data(contentsOf: path), let j = try? JSONSerialization.jsonObject(with: d) as? [String: Any] {
             s.url = j["url"] as? String ?? s.url
-            s.device = j["device"] as? String
-            s.channel = j["channel"] as? Int ?? s.channel
+            s.inputs = [AudioInput(device: j["device"] as? String, channel: j["channel"] as? Int ?? 1)]
             s.minDb = j["min_db"] as? Double ?? s.minDb
             s.scheduleOn = j["schedule_on"] as? Bool ?? s.scheduleOn
             token = j["token"] as? String ?? ""

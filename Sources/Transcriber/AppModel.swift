@@ -36,7 +36,7 @@ final class AppModel: ObservableObject {
     private let pco = PCOClient()
     private let translator = Translator()
     private let engine = SpeechEngine()
-    private let capture = AudioCapture()
+    private var captures: [UUID: AudioCapture] = [:]
     private let osc = OSCSender()
     private let meterCapture = AudioCapture()
     private let levelCheck = LevelCheck()
@@ -62,9 +62,18 @@ final class AppModel: ObservableObject {
 
     var statusTint: NSColor? { listening ? .systemRed : (running ? .systemYellow : nil) }
 
-    var channelCount: Int {
-        let ch = devices.first { $0.name == settings.device }?.channels ?? max(devices.first?.channels ?? 1, 1)
-        return max(ch, settings.channel)
+    func channelCount(for input: AudioInput) -> Int {
+        let ch = devices.first { $0.name == input.device }?.channels ?? max(devices.first?.channels ?? 1, 1)
+        return max(ch, input.channel)
+    }
+
+    /// The input the level meter and "Check audio level" listen to: the one feeding the website, else the first.
+    var meterInput: AudioInput { settings.inputs.first { $0.sendToSite } ?? settings.inputs[0] }
+
+    /// "Mixer · ch 1 · website + OSC" for the menu bar.
+    func inputTitle(_ input: AudioInput) -> String {
+        let uses = [input.sendToSite ? "website" : nil, input.triggerOSC ? "OSC" : nil].compactMap { $0 }.joined(separator: " + ")
+        return "\(input.device ?? "System default") · ch \(input.channel) · \(uses.isEmpty ? "unused" : uses)"
     }
 
     func refreshDevices() { devices = AudioDevices.inputs() }
@@ -89,7 +98,7 @@ final class AppModel: ObservableObject {
     func stop() {
         runTask?.cancel()
         runTask = nil
-        capture.stop()
+        stopCaptures()
         heartbeatTask?.cancel()
         sender?.stop()
         sender = nil
@@ -106,8 +115,9 @@ final class AppModel: ObservableObject {
         Task { @MainActor in
             guard !self.running, await MicPermission.request(), !self.running else { return }
             let reporter = LevelReporter { db in Task { @MainActor in self.levelDb = db } }
-            let device = self.devices.first { $0.name == self.settings.device }
-            try? self.meterCapture.start(device: device, channel: self.settings.channel,
+            let input = self.meterInput
+            let device = self.devices.first { $0.name == input.device }
+            try? self.meterCapture.start(device: device, channel: input.channel,
                                          onSamples: { reporter.feed($0); self.levelCheck.feed($0) }, onInterrupted: {})
         }
     }
@@ -347,19 +357,8 @@ final class AppModel: ObservableObject {
         sessionLog.append(line)
     }
 
-    /// Whether the audio input currently chosen sends OSC (each input has its own switch).
-    var oscEnabledForDevice: Bool { settings.oscDevices.contains(settings.device ?? "") }
-
-    func setOSC(_ on: Bool, forDevice device: String?) {
-        let key = device ?? ""
-        settings.oscDevices.removeAll { $0 == key }
-        if on { settings.oscDevices.append(key) }
-        saveSettings()
-    }
-
-    /// Sends the OSC message of every rule whose phrase was just heard (when this input has OSC switched on).
+    /// Sends the OSC message of every rule whose phrase was just heard.
     private func fireOSC(for text: String) {
-        guard oscEnabledForDevice else { return }
         for rule in OSC.matches(settings.oscRules, in: text) { sendOSC(rule) }
     }
 
@@ -405,27 +404,28 @@ final class AppModel: ObservableObject {
         let sender = Sender(url: settings.url, token: token) { s in Task { @MainActor in self.status = s } }
         self.sender = sender
         await sendResetIfNeeded(sender)
-        let (phrases, phraseSink) = AsyncStream.makeStream(of: [Float].self, bufferingPolicy: .bufferingNewest(8))  // falls behind -> drops oldest
+        // One worker for every input: Whisper handles one phrase at a time.
+        let phraseQueue = PhraseQueue()  // website phrases are taken before OSC-only ones
         let corrections = settings.corrections
         let worker = Task {
-            for await audio in phrases {
-                if let text = try? await engine.text(for: audio, corrections: corrections), !text.isEmpty {
-                    let (targets, forward) = await MainActor.run { (self.settings.translateTo, self.settings.sendTranslations) }
-                    await MainActor.run { self.fireOSC(for: text) }  // before translating, so cues aren't delayed
-                    guard !targets.isEmpty else {
-                        sender.send(text)
-                        await MainActor.run { self.show(text, translations: [:]) }
-                        continue
-                    }
-                    // Translate first so English and its translations reach the website together
-                    // (a slow language is dropped after a few seconds, never holding up the service).
-                    let translations = await translator.translate(text, to: targets)
-                    sender.send(text, translations: forward ? translations : [:])
-                    await MainActor.run { self.show(text, translations: translations) }
+            while let phrase = await phraseQueue.next(), !Task.isCancelled {
+                guard let text = try? await engine.text(for: phrase.audio, corrections: corrections), !text.isEmpty else { continue }
+                if phrase.input.triggerOSC { await MainActor.run { self.fireOSC(for: text) } }  // before translating, so cues aren't delayed
+                guard phrase.input.sendToSite else { continue }
+                let (targets, forward) = await MainActor.run { (self.settings.translateTo, self.settings.sendTranslations) }
+                guard !targets.isEmpty else {
+                    sender.send(text)
+                    await MainActor.run { self.show(text, translations: [:]) }
+                    continue
                 }
+                // Translate first so English and its translations reach the website together
+                // (a slow language is dropped after a few seconds, never holding up the service).
+                let translations = await translator.translate(text, to: targets)
+                sender.send(text, translations: forward ? translations : [:])
+                await MainActor.run { self.show(text, translations: translations) }
             }
         }
-        defer { phraseSink.finish(); worker.cancel() }
+        defer { phraseQueue.finish(); worker.cancel() }
 
         heartbeatTask = Task {
             while !Task.isCancelled {
@@ -444,28 +444,42 @@ final class AppModel: ObservableObject {
                 }
                 continue
             }
-            if await listenUntilDone(phraseSink) == false { return }
+            if await listenUntilDone(phraseQueue) == false { return }
         }
     }
 
-    /// Listens until stopped, the schedule window ends, or the audio setup changes. Returns false on a fatal error.
-    private func listenUntilDone(_ sink: AsyncStream<[Float]>.Continuation) async -> Bool {
-        let segmenter = Segmenter(minDb: settings.minDb)
-        let queue = DispatchQueue(label: "audio.segment")
-        let device = devices.first { $0.name == settings.device }
+    /// Listens on every input until stopped, the schedule window ends, or the audio setup changes. Returns false on a fatal error.
+    private func listenUntilDone(_ sink: PhraseQueue) async -> Bool {
+        let inputs = settings.inputs
+        let minDb = settings.minDb
         let interrupted = Interrupt()
+        let meterID = meterInput.id
         let reporter = LevelReporter { db in Task { @MainActor in self.levelDb = db } }
-        do {
-            try capture.start(device: device, channel: settings.channel,
-                              onSamples: { samples in
-                                  reporter.feed(samples)
-                                  self.levelCheck.feed(samples)
-                                  queue.async { segmenter.feed(samples: samples).forEach { sink.yield($0) } }
-                              },
-                              onInterrupted: { interrupted.flag = true })
-        } catch {
-            fail("Error: \(error.localizedDescription)")
-            return false
+        var segmenters: [(Segmenter, DispatchQueue, AudioInput)] = []
+        captures = [:]
+        for input in inputs {
+            let segmenter = Segmenter(minDb: minDb)
+            let queue = DispatchQueue(label: "audio.segment.\(input.id)")
+            let capture = AudioCapture()
+            let isMeter = input.id == meterID
+            do {
+                try capture.start(device: devices.first { $0.name == input.device }, channel: input.channel,
+                                  onSamples: { samples in
+                                      if isMeter {
+                                          reporter.feed(samples)
+                                          self.levelCheck.feed(samples)
+                                      }
+                                      queue.async { segmenter.feed(samples: samples).forEach { sink.push(Phrase(input: input, audio: $0)) } }
+                                  },
+                                  onInterrupted: { interrupted.flag = true })
+            } catch {
+                captures.values.forEach { $0.stop() }
+                captures = [:]
+                fail("Error: \(error.localizedDescription)")
+                return false
+            }
+            captures[input.id] = capture
+            segmenters.append((segmenter, queue, input))
         }
         status = "Listening"
         listening = true
@@ -473,10 +487,12 @@ final class AppModel: ObservableObject {
             try? await Task.sleep(for: .seconds(1))
         }
         let windowEnded = settings.scheduleOn && !Schedule.inWindow(settings)
-        capture.stop()
+        stopCaptures()
         listening = false
         levelDb = -90
-        queue.sync { if let tail = segmenter.flush() { sink.yield(tail) } }
+        for (segmenter, queue, input) in segmenters {
+            queue.sync { if let tail = segmenter.flush() { sink.push(Phrase(input: input, audio: tail)) } }
+        }
         if windowEnded && !Task.isCancelled {
             try? await Task.sleep(for: .seconds(4))  // let the last phrase finish transcribing
             if let saved = endSession() { status = "Saved \(saved.lastPathComponent)" }
@@ -487,6 +503,11 @@ final class AppModel: ObservableObject {
             try? await Task.sleep(for: .seconds(2))
         }
         return true
+    }
+
+    private func stopCaptures() {
+        captures.values.forEach { $0.stop() }
+        captures = [:]
     }
 
     private func fail(_ message: String) {
@@ -505,6 +526,53 @@ struct TranscriptLine: Identifiable {
     let date = Date()
     let text: String
     var translations: [String: String] = [:]
+}
+
+private struct Phrase: Sendable {
+    let input: AudioInput
+    let audio: [Float]
+}
+
+/// Phrases waiting for Whisper. Each side keeps its newest 8 (falling behind drops the oldest), and phrases
+/// from inputs that send to the website always go first, so OSC input can never delay the transcript.
+private final class PhraseQueue: @unchecked Sendable {
+    private let lock = NSLock()
+    private var site: [Phrase] = []
+    private var osc: [Phrase] = []
+    private var waiter: CheckedContinuation<Phrase?, Never>?
+    private var finished = false
+
+    func push(_ phrase: Phrase) {
+        lock.lock()
+        if let w = waiter {
+            waiter = nil
+            lock.unlock()
+            w.resume(returning: phrase)
+            return
+        }
+        if phrase.input.sendToSite { site.append(phrase); if site.count > 8 { site.removeFirst() } }
+        else { osc.append(phrase); if osc.count > 8 { osc.removeFirst() } }
+        lock.unlock()
+    }
+
+    func next() async -> Phrase? {
+        await withCheckedContinuation { cont in
+            lock.lock()
+            if !site.isEmpty { let p = site.removeFirst(); lock.unlock(); cont.resume(returning: p) }
+            else if !osc.isEmpty { let p = osc.removeFirst(); lock.unlock(); cont.resume(returning: p) }
+            else if finished { lock.unlock(); cont.resume(returning: nil) }
+            else { waiter = cont; lock.unlock() }
+        }
+    }
+
+    func finish() {
+        lock.lock()
+        finished = true
+        let w = waiter
+        waiter = nil
+        lock.unlock()
+        w?.resume(returning: nil)
+    }
 }
 
 private final class Interrupt: @unchecked Sendable { var flag = false }

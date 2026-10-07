@@ -28,14 +28,6 @@ enum AudioDevices {
         return id
     }
 
-    /// Returns nil on success, or the CoreAudio error code.
-    static func setDefaultInput(_ id: AudioDeviceID) -> OSStatus? {
-        var addr = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-        var id = id
-        let err = AudioObjectSetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, UInt32(MemoryLayout<AudioDeviceID>.size), &id)
-        return err == noErr ? nil : err
-    }
-
     static func inputChannels(_ id: AudioDeviceID) -> Int {
         var addr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreamConfiguration, mScope: kAudioDevicePropertyScopeInput, mElement: kAudioObjectPropertyElementMain)
         var size: UInt32 = 0
@@ -62,74 +54,113 @@ struct CaptureError: LocalizedError {
 }
 
 /// Records one channel of an input device and delivers 16 kHz mono Float32 samples.
+/// Talks to the device directly (no system-default switching), so several captures can run at once.
 final class AudioCapture {
-    private var engine: AVAudioEngine?
-    private var configObserver: NSObjectProtocol?
-    private var previousDefault: AudioDeviceID?
+    private var deviceID = AudioDeviceID(0)
+    private var procID: AudioDeviceIOProcID?
+    private var listeners: [(AudioObjectID, AudioObjectPropertyAddress, AudioObjectPropertyListenerBlock)] = []
+    private let ioQueue = DispatchQueue(label: "audio.capture.io", qos: .userInteractive)
 
-    /// `onSamples` is called on an audio thread; hand the work off quickly.
+    /// `onSamples` is called on an audio queue; hand the work off quickly.
     /// `onInterrupted` fires when macOS changes the audio setup (device unplugged, sample rate change).
     func start(device: InputDevice?, channel: Int, onSamples: @escaping ([Float]) -> Void, onInterrupted: @escaping () -> Void) throws {
         stop()
-        // AVAudioEngine's AUHAL refuses input-only devices ('nope'), so switch the system
-        // default input for the duration of the recording and restore it in stop().
-        if let device, AudioDevices.defaultInput() != device.id {
-            previousDefault = AudioDevices.defaultInput()
-            if let err = AudioDevices.setDefaultInput(device.id) {
-                previousDefault = nil
-                throw CaptureError(message: "Couldn't select “\(device.name)” (error \(err))")
-            }
+        let id = device?.id ?? AudioDevices.defaultInput()
+        let total = id == 0 ? 0 : AudioDevices.inputChannels(id)
+        guard total > 0 else { throw CaptureError(message: "No audio input available") }
+        guard channel >= 1, channel <= total else {
+            throw CaptureError(message: "Channel \(channel) chosen but “\(AudioDevices.name(id))” has only \(total)")
         }
-        let engine = AVAudioEngine()
-        let input = engine.inputNode
-        let hw = input.outputFormat(forBus: 0)
-        guard hw.channelCount > 0, hw.sampleRate > 0 else { throw CaptureError(message: "No audio input available") }
-        guard channel >= 1, channel <= Int(hw.channelCount) else {
-            throw CaptureError(message: "Channel \(channel) chosen but the input has only \(hw.channelCount)")
-        }
-        let mono = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: hw.sampleRate, channels: 1, interleaved: false)!
-        let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Double(sampleRate), channels: 1, interleaved: false)!
-        guard let converter = AVAudioConverter(from: mono, to: target) else { throw CaptureError(message: "Unsupported audio format") }
-        let index = channel - 1
 
-        input.installTap(onBus: 0, bufferSize: 4096, format: hw) { buffer, _ in
-            guard let src = buffer.floatChannelData, buffer.frameLength > 0,
-                  let m = AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: buffer.frameLength) else { return }
-            m.frameLength = buffer.frameLength
-            memcpy(m.floatChannelData![0], src[index], Int(buffer.frameLength) * MemoryLayout<Float>.size)
-            let cap = AVAudioFrameCount(Double(buffer.frameLength) * target.sampleRate / hw.sampleRate) + 32
-            guard let out = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: cap) else { return }
-            var fed = false
-            var error: NSError?
-            converter.convert(to: out, error: &error) { _, status in
-                if fed { status.pointee = .noDataNow; return nil }
-                fed = true
-                status.pointee = .haveData
-                return m
-            }
-            if error == nil, out.frameLength > 0, let data = out.floatChannelData {
-                onSamples(Array(UnsafeBufferPointer(start: data[0], count: Int(out.frameLength))))
+        var fmtAddr = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreamFormat, mScope: kAudioDevicePropertyScopeInput, mElement: kAudioObjectPropertyElementMain)
+        var asbd = AudioStreamBasicDescription()
+        var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        guard AudioObjectGetPropertyData(id, &fmtAddr, 0, nil, &size, &asbd) == noErr, asbd.mSampleRate > 0,
+              asbd.mFormatID == kAudioFormatLinearPCM, asbd.mFormatFlags & kAudioFormatFlagIsFloat != 0, asbd.mBitsPerChannel == 32
+        else { throw CaptureError(message: "Unsupported audio format on “\(AudioDevices.name(id))”") }
+
+        let rate = asbd.mSampleRate
+        let mono = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: rate, channels: 1, interleaved: false)!
+        let target = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Double(sampleRate), channels: 1, interleaved: false)!
+        let converter = rate == target.sampleRate ? nil : AVAudioConverter(from: mono, to: target)
+        if rate != target.sampleRate && converter == nil { throw CaptureError(message: "Unsupported audio format") }
+        let wanted = channel - 1
+
+        var proc: AudioDeviceIOProcID?
+        let made = AudioDeviceCreateIOProcIDWithBlock(&proc, id, ioQueue) { _, inData, _, _, _ in
+            // The buffers may be one interleaved block or one per channel; find the one holding our channel.
+            let list = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: inData))
+            var offset = 0
+            for buf in list {
+                let n = Int(buf.mNumberChannels)
+                if n > 0, wanted < offset + n, let data = buf.mData?.assumingMemoryBound(to: Float.self) {
+                    let frames = Int(buf.mDataByteSize) / (MemoryLayout<Float>.size * n)
+                    guard frames > 0 else { return }
+                    let col = wanted - offset
+                    var samples = [Float](repeating: 0, count: frames)
+                    for i in 0..<frames { samples[i] = data[i * n + col] }
+                    guard let converter else { onSamples(samples); return }
+                    guard let m = AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: AVAudioFrameCount(frames)) else { return }
+                    m.frameLength = AVAudioFrameCount(frames)
+                    memcpy(m.floatChannelData![0], samples, frames * MemoryLayout<Float>.size)
+                    let cap = AVAudioFrameCount(Double(frames) * target.sampleRate / rate) + 32
+                    guard let out = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: cap) else { return }
+                    var fed = false
+                    var error: NSError?
+                    converter.convert(to: out, error: &error) { _, status in
+                        if fed { status.pointee = .noDataNow; return nil }
+                        fed = true
+                        status.pointee = .haveData
+                        return m
+                    }
+                    if error == nil, out.frameLength > 0, let o = out.floatChannelData {
+                        onSamples(Array(UnsafeBufferPointer(start: o[0], count: Int(out.frameLength))))
+                    }
+                    return
+                }
+                offset += n
             }
         }
-        configObserver = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { _ in
-            onInterrupted()
+        guard made == noErr, let proc else { throw CaptureError(message: "Couldn't open “\(AudioDevices.name(id))” (error \(made))") }
+        deviceID = id
+        procID = proc
+
+        // An unplugged or re-clocked device (or a changed system default, when following it) means reconnect.
+        var watch: [(AudioObjectID, AudioObjectPropertyAddress)] = [
+            (id, AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyDeviceIsAlive, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)),
+            (id, AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyNominalSampleRate, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)),
+        ]
+        if device == nil {
+            watch.append((AudioObjectID(kAudioObjectSystemObject), AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)))
         }
-        engine.prepare()
-        try engine.start()
-        self.engine = engine
+        for (object, address) in watch {
+            var address = address
+            let block: AudioObjectPropertyListenerBlock = { _, _ in onInterrupted() }
+            if AudioObjectAddPropertyListenerBlock(object, &address, .main, block) == noErr { listeners.append((object, address, block)) }
+        }
+
+        let started = AudioDeviceStart(id, proc)
+        if started != noErr {
+            let name = AudioDevices.name(id)
+            stop()
+            throw CaptureError(message: "Couldn't start “\(name)” (error \(started))")
+        }
     }
 
     func stop() {
-        if let o = configObserver { NotificationCenter.default.removeObserver(o) }
-        configObserver = nil
-        engine?.inputNode.removeTap(onBus: 0)
-        engine?.stop()
-        engine = nil
-        if let prev = previousDefault { _ = AudioDevices.setDefaultInput(prev) }
-        previousDefault = nil
+        for (object, address, block) in listeners {
+            var address = address
+            AudioObjectRemovePropertyListenerBlock(object, &address, .main, block)
+        }
+        listeners = []
+        if let procID {
+            AudioDeviceStop(deviceID, procID)
+            AudioDeviceDestroyIOProcID(deviceID, procID)
+        }
+        procID = nil
+        deviceID = 0
     }
 }
-
 /// Turns the capture's sample callback into ~20 updates a second of the level in dB (same scale as the sensitivity slider).
 final class LevelReporter: @unchecked Sendable {
     private var last = Date.distantPast
