@@ -178,7 +178,7 @@ struct SettingsView: View {
                 Toggle("Open at login", isOn: Binding(get: { model.launchAtLogin }, set: { model.setLaunchAtLogin($0) }))
             }
             Section("Schedule") {
-                Toggle("Only listen during this schedule", isOn: $model.settings.scheduleOn)
+                Toggle("Send to website only during this schedule (OSC inputs always listen)", isOn: $model.settings.scheduleOn)
                 Picker("Times from", selection: $model.settings.pcoOn) {
                     Text("Set manually").tag(false)
                     Text("Planning Center").tag(true)

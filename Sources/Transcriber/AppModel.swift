@@ -19,6 +19,7 @@ final class AppModel: ObservableObject {
     private var restarting = false
     @Published var running = false
     @Published var listening = false
+    private var pushingToSite = true  // false between services when a schedule is on: only OSC inputs listen
     @Published var devices: [InputDevice] = []
     @Published var launchAtLogin = SMAppService.mainApp.status == .enabled
     /// Set by the updater when an update is downloaded and waiting to relaunch the app.
@@ -413,7 +414,7 @@ final class AppModel: ObservableObject {
             while let phrase = await phraseQueue.next(), !Task.isCancelled {
                 guard let text = try? await engine.text(for: phrase.audio, corrections: corrections), !text.isEmpty else { continue }
                 if phrase.input.triggerOSC { await MainActor.run { self.fireOSC(for: text) } }  // before translating, so cues aren't delayed
-                guard phrase.input.sendToSite else { continue }
+                guard phrase.input.sendToSite, await MainActor.run(body: { self.pushingToSite }) else { continue }
                 let (targets, forward) = await MainActor.run { (self.settings.translateTo, self.settings.sendTranslations) }
                 guard !targets.isEmpty else {
                     sender.send(text)
@@ -431,28 +432,39 @@ final class AppModel: ObservableObject {
 
         heartbeatTask = Task {
             while !Task.isCancelled {
-                if await MainActor.run(body: { self.listening }) { await sender.heartbeat() }
+                if await MainActor.run(body: { self.listening && self.pushingToSite }) { await sender.heartbeat() }
                 try? await Task.sleep(for: .seconds(15))
             }
         }
 
+        // The schedule gates the website only: inputs that trigger OSC keep listening between services.
+        var sessionOpen = !settings.scheduleOn || Schedule.inWindow(settings)
         while !Task.isCancelled {
-            if settings.scheduleOn && !Schedule.inWindow(settings) {
+            let inService = !settings.scheduleOn || Schedule.inWindow(settings)
+            if inService && !sessionOpen {  // a new window is a new transcript
+                beginSession()
+                await sendResetIfNeeded(sender)
+                sessionOpen = true
+            }
+            pushingToSite = inService
+            let active = settings.inputs.filter { inService || $0.triggerOSC }
+            if active.isEmpty {
                 status = "Waiting for the schedule"
                 while !Task.isCancelled && !(settings.scheduleOn ? Schedule.inWindow(settings) : true) { try? await Task.sleep(for: .seconds(1)) }
-                if !Task.isCancelled {  // a new window is a new transcript
-                    beginSession()
-                    await sendResetIfNeeded(sender)
-                }
                 continue
             }
-            if await listenUntilDone(phraseQueue) == false { return }
+            if await listenUntilDone(phraseQueue, inputs: active, inService: inService) == false { return }
+            if inService && settings.scheduleOn && !Schedule.inWindow(settings) && !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(4))  // let the last phrase finish transcribing
+                if let saved = endSession() { status = "Saved \(saved.lastPathComponent)" }
+                sessionOpen = false
+                pushingToSite = false
+            }
         }
     }
 
     /// Listens on every input until stopped, the schedule window ends, or the audio setup changes. Returns false on a fatal error.
-    private func listenUntilDone(_ sink: PhraseQueue) async -> Bool {
-        let inputs = settings.inputs
+    private func listenUntilDone(_ sink: PhraseQueue, inputs: [AudioInput], inService: Bool) async -> Bool {
         let minDb = settings.minDb
         let interrupted = Interrupt()
         let meterID = meterInput.id
@@ -483,21 +495,16 @@ final class AppModel: ObservableObject {
             captures[input.id] = capture
             segmenters.append((segmenter, queue, input))
         }
-        status = "Listening"
+        status = inService ? "Listening" : "Listening for OSC only"
         listening = true
-        while !Task.isCancelled && !interrupted.flag && !(settings.scheduleOn && !Schedule.inWindow(settings)) {
+        while !Task.isCancelled && !interrupted.flag && (!settings.scheduleOn || Schedule.inWindow(settings)) == inService {
             try? await Task.sleep(for: .seconds(1))
         }
-        let windowEnded = settings.scheduleOn && !Schedule.inWindow(settings)
         stopCaptures()
         listening = false
         levelDb = -90
         for (segmenter, queue, input) in segmenters {
             queue.sync { if let tail = segmenter.flush() { sink.push(Phrase(input: input, audio: tail)) } }
-        }
-        if windowEnded && !Task.isCancelled {
-            try? await Task.sleep(for: .seconds(4))  // let the last phrase finish transcribing
-            if let saved = endSession() { status = "Saved \(saved.lastPathComponent)" }
         }
         if interrupted.flag && !Task.isCancelled {
             status = "Audio changed — reconnecting…"
