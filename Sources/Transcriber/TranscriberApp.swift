@@ -81,8 +81,20 @@ struct MenuContent: View {
         Toggle("Only \(Schedule.summary(model.settings))", isOn: Binding(get: { model.settings.scheduleOn }, set: { model.settings.scheduleOn = $0; model.apply() }))
         Divider()
         Button("Show transcript") {
+            model.transcriptLanguage = ""
             openWindow(id: "transcript")
             NSApp.activate(ignoringOtherApps: true)
+        }
+        if !model.settings.translateTo.isEmpty {
+            Menu("View translation") {
+                ForEach(model.settings.translateTo, id: \.self) { code in
+                    Button(model.languages.first { $0.code == code }?.name ?? code) {
+                        model.transcriptLanguage = code
+                        openWindow(id: "transcript")
+                        NSApp.activate(ignoringOtherApps: true)
+                    }
+                }
+            }
         }
         Button("Save transcript now") {
             if !model.settings.saveFolder.isEmpty, model.saveTranscript(to: URL(fileURLWithPath: model.settings.saveFolder)) != nil { return }
@@ -221,8 +233,15 @@ struct SettingsView: View {
                 if model.languages.isEmpty {
                     Text("Translation needs macOS 26 or newer.").font(.caption).foregroundStyle(.secondary)
                 } else {
-                    ForEach(model.languages) { lang in
-                        Toggle(lang.name, isOn: Binding(get: { model.settings.translateTo.contains(lang.code) }, set: { _ in model.toggleLanguage(lang.code) }))
+                    DisclosureGroup {
+                        ForEach(model.languages) { lang in
+                            Toggle(lang.name, isOn: Binding(get: { model.settings.translateTo.contains(lang.code) }, set: { _ in model.toggleLanguage(lang.code) }))
+                        }
+                    } label: {
+                        LabeledContent("Translate into") {
+                            Text(model.settings.translateTo.isEmpty ? "None" : "\(model.settings.translateTo.count) selected")
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     Toggle("Send translations to the website (viewers pick their language)", isOn: Binding(get: { model.settings.sendTranslations }, set: {
                         model.settings.sendTranslations = $0
@@ -427,14 +446,8 @@ struct PlanningCenterSection: View {
 struct TranscriptView: View {
     @ObservedObject var model: AppModel
     @State private var floating = false
-    @State private var shown = ""   // "" = original language, otherwise a translation code
 
-    private var choices: [String] { [""] + model.settings.translateTo }
-    private var current: String { choices.contains(shown) ? shown : "" }
-
-    private func name(_ code: String) -> String {
-        code.isEmpty ? "English" : (model.languages.first { $0.code == code }?.name ?? code)
-    }
+    private var current: String { model.settings.translateTo.contains(model.transcriptLanguage) ? model.transcriptLanguage : "" }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -442,12 +455,6 @@ struct TranscriptView: View {
                 Circle().fill(model.listening ? .red : (model.running ? .yellow : .gray)).frame(width: 8, height: 8)
                 Text(model.status).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 Spacer()
-                if choices.count > 1 {
-                    Picker("Language", selection: Binding(get: { current }, set: { shown = $0 })) {
-                        ForEach(choices, id: \.self) { Text(name($0)).tag($0) }
-                    }
-                    .pickerStyle(.segmented).labelsHidden().fixedSize()
-                }
                 Toggle("Keep on top", isOn: $floating).toggleStyle(.checkbox).font(.caption)
                 Button("Clear") { model.lines.removeAll() }.controlSize(.small)
             }

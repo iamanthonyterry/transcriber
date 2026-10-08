@@ -11,6 +11,8 @@ final class AppModel: ObservableObject {
     @Published var lastText = ""
     /// Recent phrases shown in the local transcript window (newest last).
     @Published var lines: [TranscriptLine] = []
+    /// Language the transcript window shows: "" = original (English), otherwise a translation code.
+    @Published var transcriptLanguage = ""
     /// Every phrase of the current session (survives "Clear"); saved and reset when the session ends.
     private(set) var sessionLog: [TranscriptLine] = []
     private var sessionStart = Date()
