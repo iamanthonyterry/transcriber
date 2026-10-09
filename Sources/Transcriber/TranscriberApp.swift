@@ -79,6 +79,14 @@ struct MenuContent: View {
             }
             .disabled(model.running)
         }
+        if model.hasVoiceCues {
+            // saved without apply(): switching cues off must not interrupt the audio
+            Toggle("Voice cues", isOn: Binding(get: { model.settings.oscOn }, set: { model.settings.oscOn = $0; model.saveSettings() }))
+            Menu("Recent cues") {
+                if model.cueLog.isEmpty { Text("None heard yet") }
+                ForEach(model.cueLog.prefix(12)) { Text(CueRow.summary($0)) }
+            }
+        }
         Toggle("Only \(Schedule.summary(model.settings))", isOn: Binding(get: { model.settings.scheduleOn }, set: { model.settings.scheduleOn = $0; model.apply() }))
         Divider()
         Button("Show transcript") {
@@ -120,6 +128,18 @@ struct MenuContent: View {
         }
         Divider()
         Button("Quit") { model.stop(); NSApp.terminate(nil) }
+    }
+}
+
+enum CueRow {
+    /// "10:42:07 next slide → /cue/next/start" or why it was held back.
+    static func summary(_ e: CueEvent) -> String {
+        let time = e.date.formatted(date: .omitted, time: .standard)
+        switch e.outcome {
+        case .sent: return "\(time)  “\(e.rule.phrase)” → \(e.rule.address)\(e.rule.argument.isEmpty ? "" : " " + e.rule.argument)"
+        case .cooldown: return "\(time)  “\(e.rule.phrase)” ignored: just fired"
+        case .noWakeWord: return "\(time)  “\(e.rule.phrase)” ignored: no wake word"
+        }
     }
 }
 
@@ -314,7 +334,16 @@ struct SettingsView: View {
                     .padding(.vertical, 2)
                 }
                 Button("Add a phrase") { model.settings.oscRules.append(OSCRule()) }
-                Text("Only inputs with “Trigger OSC” on send these. A phrase matches whole words, ignoring case and punctuation. The value can be a whole number, a decimal, or text; leave it empty to send no value.")
+                TextField("Wake word (optional)", text: $model.settings.oscWakeWord)
+                Text("With a wake word, a phrase only fires when said right after it: “\(model.settings.oscWakeWord.isEmpty ? "booth" : model.settings.oscWakeWord), next slide”, or the wake word, a breath, then the phrase. Pick an ordinary word that isn’t said in the service.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Stepper("The same phrase can fire again after \(model.settings.oscCooldown.formatted()) s", value: $model.settings.oscCooldown, in: 0...30, step: 0.5)
+                if !model.cueLog.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        ForEach(model.cueLog.prefix(5)) { Text(CueRow.summary($0)).font(.caption).foregroundStyle($0.outcome == .sent ? .primary : .secondary) }
+                    }
+                }
+                Text("Only inputs with “Trigger OSC” on send these, and “Voice cues” in the menu bar switches them all off. A phrase matches whole words, ignoring case and punctuation. The value can be a whole number, a decimal, or text; leave it empty to send no value.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Tuning") {
@@ -325,6 +354,9 @@ struct SettingsView: View {
                 TextField("Corrections", text: $model.settings.corrections, axis: .vertical)
                     .lineLimit(3...6)
                 Text("One per line, written heard => correct (e.g. Life Point => Lifepoint). Fixes names and places Whisper keeps getting wrong.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Toggle("Skip music, singing and noise", isOn: $model.settings.speechOnly)
+                Text("Only talking is transcribed, including talking over music. Turn this off if real speech is being left out.")
                     .font(.caption).foregroundStyle(.secondary)
                 LevelMeter(level: model.levelDb, threshold: model.settings.minDb)
                 HStack {

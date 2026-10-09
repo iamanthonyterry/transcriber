@@ -41,6 +41,9 @@ final class AppModel: ObservableObject {
     private let engine = SpeechEngine()
     private var captures: [UUID: AudioCapture] = [:]
     private let osc = OSCSender()
+    private var cueGuard = CueGuard()
+    /// The last voice cues heard, newest first, with what became of each (shown in the menu bar and Settings).
+    @Published var cueLog: [CueEvent] = []
     private let meterCapture = AudioCapture()
     private let levelCheck = LevelCheck()
     @Published var checkingLevel = false
@@ -363,10 +366,16 @@ final class AppModel: ObservableObject {
         sessionLog.append(line)
     }
 
-    /// Sends the OSC message of every rule whose phrase was just heard.
+    /// Sends the OSC message of every rule whose phrase was just heard, unless a guard holds it back.
     private func fireOSC(for text: String) {
-        for rule in OSC.matches(settings.oscRules, in: text) { sendOSC(rule) }
+        guard settings.oscOn else { return }
+        let events = cueGuard.check(text, rules: settings.oscRules, wakeWord: settings.oscWakeWord, cooldown: settings.oscCooldown)
+        for e in events where e.outcome == .sent { sendOSC(e.rule) }
+        cueLog = Array((events.reversed() + cueLog).prefix(30))
     }
+
+    /// True when some input can fire some rule (so the menu bar shows the voice cue controls).
+    var hasVoiceCues: Bool { !settings.oscRules.isEmpty && settings.inputs.contains { $0.triggerOSC } }
 
     func sendOSC(_ rule: OSCRule) {
         osc.send(rule, host: settings.oscHost, port: settings.oscPort)
@@ -413,6 +422,7 @@ final class AppModel: ObservableObject {
         // One worker for every input: Whisper handles one phrase at a time.
         let phraseQueue = PhraseQueue()  // website phrases are taken before OSC-only ones
         let corrections = settings.corrections
+        let gate = settings.speechOnly ? SpeechGate() : nil
         // Translating happens on its own ordered track so a slow translation never holds up
         // transcribing the next phrase.
         let (translateStream, translateOut) = AsyncStream.makeStream(of: (text: String, targets: [String], forward: Bool).self)
@@ -428,6 +438,7 @@ final class AppModel: ObservableObject {
         let worker = Task {
             var heard: [UUID: (text: String, at: Date)] = [:]  // each input's last phrase, as context for its next one
             while let phrase = await phraseQueue.next(), !Task.isCancelled {
+                if let gate, !gate.isSpeech(SpeechEngine.normalized(phrase.audio)) { continue }  // music, singing, applause, noise
                 // After a long gap the last phrase is no longer what was "just said".
                 let previous = heard[phrase.input.id].flatMap { Date().timeIntervalSince($0.at) < 30 ? $0.text : nil } ?? ""
                 let vocabulary = await MainActor.run { self.settings.promptVocabulary }  // Planning Center's names change week to week

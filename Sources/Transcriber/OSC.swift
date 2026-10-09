@@ -19,7 +19,7 @@ enum OSC {
         }
     }
 
-    private static func normalize(_ s: String) -> String {
+    static func normalize(_ s: String) -> String {
         let kept = s.lowercased().map { $0.isLetter || $0.isNumber ? $0 : " " }
         return String(kept).split(separator: " ").joined(separator: " ")
     }
@@ -49,6 +49,44 @@ enum OSC {
 
     private static func be(_ v: UInt32) -> Data {
         withUnsafeBytes(of: v.bigEndian) { Data($0) }
+    }
+}
+
+/// What happened to a rule whose phrase was heard.
+struct CueEvent: Identifiable {
+    enum Outcome { case sent, cooldown, noWakeWord }
+    let id = UUID()
+    let date: Date
+    let rule: OSCRule
+    let outcome: Outcome
+}
+
+/// Decides which heard rules may actually fire, so talk that merely contains a phrase doesn't run a cue.
+/// With a wake word, a rule fires only right after it: in the same phrase, or in the next one within a few
+/// seconds (people pause after the wake word). One wake word allows one phrase of cues. A rule that just
+/// fired is held off for the cooldown, so an echo or a repeated word can't fire it twice.
+struct CueGuard {
+    static let wakeSeconds = 8.0
+    private var awakeUntil = Date.distantPast
+    private var lastSent: [UUID: Date] = [:]
+
+    mutating func check(_ text: String, rules: [OSCRule], wakeWord: String, cooldown: Double, now: Date = Date()) -> [CueEvent] {
+        var heard = OSC.normalize(text)
+        let wake = OSC.normalize(wakeWord)
+        var awake = wake.isEmpty || now < awakeUntil
+        if !wake.isEmpty, let r = (" " + heard + " ").range(of: " " + wake + " ", options: .backwards) {
+            heard = String((" " + heard + " ")[r.upperBound...])  // only what follows the wake word counts
+            awake = true
+            awakeUntil = now.addingTimeInterval(Self.wakeSeconds)
+        }
+        let events = OSC.matches(rules, in: heard).map { rule -> CueEvent in
+            if !awake { return CueEvent(date: now, rule: rule, outcome: .noWakeWord) }
+            if let last = lastSent[rule.id], now.timeIntervalSince(last) < cooldown { return CueEvent(date: now, rule: rule, outcome: .cooldown) }
+            lastSent[rule.id] = now
+            return CueEvent(date: now, rule: rule, outcome: .sent)
+        }
+        if events.contains(where: { $0.outcome == .sent }) { awakeUntil = .distantPast }
+        return events
     }
 }
 

@@ -10,6 +10,7 @@ struct Settings: Codable, Equatable {
     var inputs = [AudioInput()]    // every audio input being listened to
     var corrections = defaultCorrections  // one "heard => correct" per line, applied to every phrase
     var vocabulary = ""            // names and terms Whisper should expect (one per line or comma-separated)
+    var speechOnly = true          // skip phrases that are music, singing or noise rather than talking
     var minDb = -50.0
     var scheduleOn = false
     var scheduleWindows = [ScheduleWindow()]  // listens during any of these
@@ -29,6 +30,9 @@ struct Settings: Codable, Equatable {
     var oscHost = "127.0.0.1"      // where OSC messages go (QLab, ProPresenter, a lighting desk…)
     var oscPort = 53000
     var oscRules: [OSCRule] = []   // phrase -> OSC message
+    var oscOn = true               // the menu bar's off switch for voice cues (inputs keep listening)
+    var oscWakeWord = ""           // when set, a phrase only fires right after this word
+    var oscCooldown = 2.0          // seconds before the same phrase can fire again
 }
 
 extension Settings {
@@ -76,6 +80,7 @@ extension Settings {
         }
         corrections = try c.decodeIfPresent(String.self, forKey: .corrections) ?? d.corrections
         vocabulary = try c.decodeIfPresent(String.self, forKey: .vocabulary) ?? d.vocabulary
+        speechOnly = try c.decodeIfPresent(Bool.self, forKey: .speechOnly) ?? d.speechOnly
         minDb = try c.decodeIfPresent(Double.self, forKey: .minDb) ?? d.minDb
         scheduleOn = try c.decodeIfPresent(Bool.self, forKey: .scheduleOn) ?? d.scheduleOn
         if let w = try c.decodeIfPresent([ScheduleWindow].self, forKey: .scheduleWindows) {
@@ -102,6 +107,9 @@ extension Settings {
         oscHost = try c.decodeIfPresent(String.self, forKey: .oscHost) ?? d.oscHost
         oscPort = try c.decodeIfPresent(Int.self, forKey: .oscPort) ?? d.oscPort
         oscRules = try c.decodeIfPresent([OSCRule].self, forKey: .oscRules) ?? d.oscRules
+        oscOn = try c.decodeIfPresent(Bool.self, forKey: .oscOn) ?? d.oscOn
+        oscWakeWord = try c.decodeIfPresent(String.self, forKey: .oscWakeWord) ?? d.oscWakeWord
+        oscCooldown = try c.decodeIfPresent(Double.self, forKey: .oscCooldown) ?? d.oscCooldown
     }
 }
 

@@ -24,9 +24,10 @@ A Mac that was set up with the old Python app picks up its settings automaticall
 - **Website settings…**: website sign-in / campus, *Start listening when the app opens*, *Open at login*, and tuning:
   - **Corrections** (`heard => correct`, one per line) fix names and places Whisper keeps misspelling, e.g. `Life Point => Lifepoint`.
   - **Names and terms**: words Whisper should expect (this week's speaker, the series title, local place names), separated by commas or lines. It hears them correctly instead of fixing them afterwards. About ten names fit; a long list adds up to half a second of delay. With the schedule set to Planning Center, *Expect this plan's names* adds the speakers, series and title of today's (or the next) plan after your own list.
+  - **Skip music, singing and noise**: only talking is transcribed (talking over music still is). Turn it off if real speech is being left out.
   - **Noise gate** (dB): hears noise as speech? Raise it (try −42). Misses quiet speech? Lower it.
-  - **OSC**: send an OSC message (UDP, e.g. to QLab on port 53000) when a phrase is heard. Only inputs with *Trigger OSC* on send them, so a separate mic can drive cues without going to the website.
-- Best accuracy comes from a clean feed of just the speaker's mic channel from the board, not a room mic, and not during music.
+  - **OSC**: send an OSC message (UDP, e.g. to QLab on port 53000) when a phrase is heard. Only inputs with *Trigger OSC* on send them, so a separate mic can drive cues without going to the website. Guards against accidental cues: an optional *wake word* (a phrase only fires right after it), a cooldown before the same phrase can fire again, **Voice cues** in the menu bar to switch them all off without stopping the transcript, and **Recent cues** showing what fired and what was ignored.
+- Best accuracy comes from a clean feed of just the speaker's mic channel from the board, not a room mic.
 
 For the Mac mini, turn on *Start listening when the app opens* and *Open at login*, and in System Settings → Energy enable "Prevent automatic sleeping". Then it comes back by itself after reboots and updates.
 

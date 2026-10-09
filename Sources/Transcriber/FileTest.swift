@@ -16,11 +16,17 @@ enum FileTest {
                 if let tail = seg.flush() { phrases.append(tail) }
                 print("\(phrases.count) phrase(s) detected")
                 var previous = ""
+                let gate = SpeechGate()
                 for p in phrases {
                     let t0 = Date()
+                    let confidence = gate.speechConfidence(SpeechEngine.normalized(p))
+                    if let c = confidence, c < SpeechGate.threshold {
+                        print(String(format: "(skipped %.1fs of audio: speech %.2f, checked in %.3fs)", Double(p.count) / Double(sampleRate), c, Date().timeIntervalSince(t0)))
+                        continue
+                    }
                     let text = try await engine.text(for: p, corrections: defaultCorrections, vocabulary: vocabulary, previous: previous)
                     if !text.isEmpty { previous = text }
-                    print(String(format: "(%.1fs for %.1fs of audio) %@", Date().timeIntervalSince(t0), Double(p.count) / Double(sampleRate), text))
+                    print(String(format: "(%.1fs for %.1fs of audio, speech %.2f) %@", Date().timeIntervalSince(t0), Double(p.count) / Double(sampleRate), confidence ?? -1, text))
                 }
                 exit(0)
             } catch {
