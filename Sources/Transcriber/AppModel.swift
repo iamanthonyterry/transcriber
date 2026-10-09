@@ -410,6 +410,18 @@ final class AppModel: ObservableObject {
         // One worker for every input: Whisper handles one phrase at a time.
         let phraseQueue = PhraseQueue()  // website phrases are taken before OSC-only ones
         let corrections = settings.corrections
+        // Translating happens on its own ordered track so a slow translation never holds up
+        // transcribing the next phrase.
+        let (translateStream, translateOut) = AsyncStream.makeStream(of: (text: String, targets: [String], forward: Bool).self)
+        let translateWorker = Task {
+            for await item in translateStream {
+                // English and its translations reach the website together
+                // (a slow language is dropped after a few seconds, never holding up the service).
+                let translations = await translator.translate(item.text, to: item.targets)
+                sender.send(item.text, translations: item.forward ? translations : [:])
+                await MainActor.run { self.show(item.text, translations: translations) }
+            }
+        }
         let worker = Task {
             while let phrase = await phraseQueue.next(), !Task.isCancelled {
                 guard let text = try? await engine.text(for: phrase.audio, corrections: corrections), !text.isEmpty else { continue }
@@ -421,14 +433,11 @@ final class AppModel: ObservableObject {
                     await MainActor.run { self.show(text, translations: [:]) }
                     continue
                 }
-                // Translate first so English and its translations reach the website together
-                // (a slow language is dropped after a few seconds, never holding up the service).
-                let translations = await translator.translate(text, to: targets)
-                sender.send(text, translations: forward ? translations : [:])
-                await MainActor.run { self.show(text, translations: translations) }
+                translateOut.yield((text, targets, forward))
             }
+            translateOut.finish()
         }
-        defer { phraseQueue.finish(); worker.cancel() }
+        defer { phraseQueue.finish(); worker.cancel(); translateWorker.cancel() }
 
         heartbeatTask = Task {
             while !Task.isCancelled {

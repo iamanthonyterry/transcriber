@@ -5,7 +5,8 @@ let frameSize = 480  // 30 ms
 
 /// Energy-based speech detector that cuts audio into phrases.
 /// The noise floor adapts, so it copes with different mixers and rooms. A phrase ends after a short
-/// pause; long run-on speech is cut at the next small pause.
+/// pause; run-on speech is cut at the next small pause once it passes a few seconds, so text and
+/// translations appear without waiting for a full sentence.
 final class Segmenter {
     private let minDb: Float
     private let marginDb: Float = 9
@@ -66,7 +67,7 @@ final class Segmenter {
         silentFrames = loud ? 0 : silentFrames + 1
         let seconds = Float(buf.count * frameSize) / Float(sampleRate)
         let pause = Float(silentFrames * frameSize) / Float(sampleRate)
-        let done = pause >= 0.7 || (seconds >= 12 && pause >= 0.25) || seconds >= 22
+        let done = pause >= 0.5 || (seconds >= 5 && pause >= 0.25) || seconds >= 15
         guard done else { return nil }
         let audio = buf.flatMap { $0 }
         reset()
