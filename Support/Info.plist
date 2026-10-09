@@ -2,8 +2,8 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>CFBundleName</key><string>Lifepoint Transcriber</string>
-	<key>CFBundleDisplayName</key><string>Lifepoint Transcriber</string>
+	<key>CFBundleName</key><string>Transcriber</string>
+	<key>CFBundleDisplayName</key><string>Transcriber</string>
 	<key>CFBundleIdentifier</key><string>church.lifepoint.transcriber</string>
 	<key>CFBundleExecutable</key><string>Transcriber</string>
 	<key>CFBundleIconFile</key><string>AppIcon</string>
@@ -13,7 +13,7 @@
 	<key>CFBundleVersion</key><string>__BUILD__</string>
 	<key>LSMinimumSystemVersion</key><string>14.0</string>
 	<key>LSUIElement</key><true/>
-	<key>NSMicrophoneUsageDescription</key><string>Lifepoint Transcriber listens to the sound board to create live captions.</string>
+	<key>NSMicrophoneUsageDescription</key><string>Transcriber listens to the sound board to create live captions.</string>
 	<key>NSHighResolutionCapable</key><true/>
 	<key>PCOClientID</key><string>__PCO_CLIENT_ID__</string>
 	<key>PCOClientSecret</key><string>__PCO_CLIENT_SECRET__</string>
