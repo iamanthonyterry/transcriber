@@ -12,10 +12,13 @@ struct Settings: Codable, Equatable {
     var vocabulary = ""            // names and terms Whisper should expect (one per line or comma-separated)
     var speechOnly = true          // skip phrases that are music, singing or noise rather than talking
     var minDb = -50.0
+    var silenceWarnMinutes = 0     // warn when the website's input has been silent this long during a service (0 = off)
     var scheduleOn = false
     var scheduleWindows = [ScheduleWindow()]  // listens during any of these
     var saveCopy = false               // write the whole transcript to saveFolder when a session ends
     var saveFolder = ""
+    var saveSubtitles = false          // also write .srt and .vtt subtitle files (one pair per language)
+    var saveAudio = false              // also record the session's audio next to the transcript
     var translateTo: [String] = []  // language codes translated on-device (shown locally, optionally sent)
     var sendTranslations = false    // also send the translations to the website for viewers to pick from
     var autoStart = true           // start listening when the app opens (survives updates and reboots)
@@ -45,7 +48,8 @@ extension Settings {
 /// One audio input (a device and one of its channels) and what its speech is used for.
 struct AudioInput: Codable, Equatable, Identifiable, Sendable {
     var id = UUID()
-    var device: String?       // nil = system default
+    var device: String?       // the device's name; nil = system default
+    var deviceUID: String?    // which device exactly (nil until first matched; older settings only had the name)
     var channel = 1
     var sendToSite = true     // transcript goes to the website and the local window
     var triggerOSC = false    // phrases heard here fire the OSC rules
@@ -82,6 +86,7 @@ extension Settings {
         vocabulary = try c.decodeIfPresent(String.self, forKey: .vocabulary) ?? d.vocabulary
         speechOnly = try c.decodeIfPresent(Bool.self, forKey: .speechOnly) ?? d.speechOnly
         minDb = try c.decodeIfPresent(Double.self, forKey: .minDb) ?? d.minDb
+        silenceWarnMinutes = try c.decodeIfPresent(Int.self, forKey: .silenceWarnMinutes) ?? d.silenceWarnMinutes
         scheduleOn = try c.decodeIfPresent(Bool.self, forKey: .scheduleOn) ?? d.scheduleOn
         if let w = try c.decodeIfPresent([ScheduleWindow].self, forKey: .scheduleWindows) {
             scheduleWindows = w
@@ -93,6 +98,8 @@ extension Settings {
         }
         saveCopy = try c.decodeIfPresent(Bool.self, forKey: .saveCopy) ?? d.saveCopy
         saveFolder = try c.decodeIfPresent(String.self, forKey: .saveFolder) ?? d.saveFolder
+        saveSubtitles = try c.decodeIfPresent(Bool.self, forKey: .saveSubtitles) ?? d.saveSubtitles
+        saveAudio = try c.decodeIfPresent(Bool.self, forKey: .saveAudio) ?? d.saveAudio
         translateTo = try c.decodeIfPresent([String].self, forKey: .translateTo) ?? d.translateTo
         sendTranslations = try c.decodeIfPresent(Bool.self, forKey: .sendTranslations) ?? d.sendTranslations
         autoStart = try c.decodeIfPresent(Bool.self, forKey: .autoStart) ?? d.autoStart

@@ -69,6 +69,7 @@ struct MenuContent: View {
 
     var body: some View {
         Text(model.status)
+        if let w = model.feedWarning { Text("⚠ \(w)") }
         Text(model.lastText.isEmpty ? "(nothing heard yet)" : "“\(model.lastText.prefix(70))\(model.lastText.count > 70 ? "…" : "")”")
         Divider()
         Button(model.running ? "Stop transcribing" : "Start transcribing") { model.toggle() }
@@ -147,13 +148,19 @@ enum CueRow {
 struct InputPickers: View {
     @ObservedObject var model: AppModel
     @Binding var input: AudioInput
+    private static let unplugged = "\u{0}unplugged"
 
     var body: some View {
-        Picker("Audio input", selection: Binding(get: { input.device ?? "" }, set: { input.device = $0.isEmpty ? nil : $0; input.channel = 1; model.apply() })) {
+        Picker("Audio input", selection: Binding(get: { input.device == nil ? "" : (model.device(for: input)?.uid ?? Self.unplugged) }, set: { uid in
+            guard uid != Self.unplugged else { return }
+            let d = model.devices.first { $0.uid == uid }
+            input.device = d?.name; input.deviceUID = d?.uid; input.channel = 1
+            model.apply()
+        })) {
             Text("System default").tag("")
-            ForEach(model.devices) { Text("\($0.name) (\($0.channels) ch)").tag($0.name) }
+            ForEach(model.devices) { Text("\($0.name) (\($0.channels) ch)").tag($0.uid) }
             // keeps a saved input visible while its device is unplugged
-            if let d = input.device, !model.devices.contains(where: { $0.name == d }) { Text("\(d) (not connected)").tag(d) }
+            if model.isMissing(input) { Text("\(input.device ?? "") (not connected)").tag(Self.unplugged) }
         }
         .disabled(model.running)
         Picker("Channel", selection: Binding(get: { input.channel }, set: { input.channel = $0; model.apply() })) {
@@ -288,6 +295,12 @@ struct SettingsView: View {
                 }
                 Text("A session ends when you stop transcribing, quit, or the schedule’s end time passes. The whole session is kept (Clear only empties the window).")
                     .font(.caption).foregroundStyle(.secondary)
+                Toggle("Also save subtitle files (.srt and .vtt)", isOn: $model.settings.saveSubtitles)
+                    .disabled(!model.settings.saveCopy)
+                Toggle("Also record the audio", isOn: $model.settings.saveAudio)
+                    .disabled(!model.settings.saveCopy)
+                Text("Subtitles are timed from the start of the session and line up with the recording, which uses about 20 MB an hour. Each translation gets its own subtitle files.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             Section("Audio inputs") {
                 ForEach($model.settings.inputs) { $input in
@@ -364,6 +377,10 @@ struct SettingsView: View {
                     Text("\(Int(model.settings.minDb)) dB").monospacedDigit().frame(width: 60, alignment: .trailing)
                 }
                 Text("Hears noise as speech? Raise this (try −42). Misses quiet speech? Lower it.").font(.caption).foregroundStyle(.secondary)
+                Stepper(model.settings.silenceWarnMinutes == 0 ? "Don’t warn about silence" : "Warn after \(model.settings.silenceWarnMinutes) min of silence",
+                        value: $model.settings.silenceWarnMinutes, in: 0...120, step: 5)
+                Text("Turns the menu bar icon orange and sends a notification when nothing has come in for that long while sending to the website. A muted mic during worship counts as silence, so set it longer than your music. Clipping is always warned about.")
+                    .font(.caption).foregroundStyle(.secondary)
                 HStack {
                     Button(model.checkingLevel ? "Listening…" : "Check audio level") { model.checkLevel() }
                         .disabled(model.checkingLevel)

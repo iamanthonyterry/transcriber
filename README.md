@@ -18,13 +18,16 @@ A Mac that was set up with the old Python app picks up its settings automaticall
 
 ## Using it
 
-- 🎙 icon = idle, 🟡 = starting or waiting for the schedule, 🔴 = listening.
+- 🎙 icon = idle, 🟡 = starting or waiting for the schedule, 🔴 = listening, 🟠 = listening but the feed is silent or clipping.
 - **Audio inputs** (one submenu each): pick the board's interface and the channel carrying the pastor's mic. Add more inputs in Settings; each one can *Send to website*, *Trigger OSC*, or both.
+- An input remembers its exact device. If that device is unplugged the app waits for it (it never switches to another microphone) and carries on when it is back.
+- **Save a copy** can also write subtitle files (`.srt` and `.vtt`, one pair per language, timed from the start of the session) and record the audio (`.m4a`, about 20 MB an hour) that the subtitles line up with.
 - **Only Sundays 8:00–12:30**: the app switches itself on and off.
 - **Website settings…**: website sign-in / campus, *Start listening when the app opens*, *Open at login*, and tuning:
   - **Corrections** (`heard => correct`, one per line) fix names and places Whisper keeps misspelling, e.g. `Life Point => Lifepoint`.
   - **Names and terms**: words Whisper should expect (this week's speaker, the series title, local place names), separated by commas or lines. It hears them correctly instead of fixing them afterwards. About ten names fit; a long list adds up to half a second of delay. With the schedule set to Planning Center, *Expect this plan's names* adds the speakers, series and title of today's (or the next) plan after your own list.
   - **Skip music, singing and noise**: only talking is transcribed (talking over music still is). Turn it off if real speech is being left out.
+  - **Warn after silence**: the icon turns orange and a notification appears when the website's input has been silent that long (off by default; set it longer than your music if the mic is muted during worship). Clipping always warns.
   - **Noise gate** (dB): hears noise as speech? Raise it (try −42). Misses quiet speech? Lower it.
   - **OSC**: send an OSC message (UDP, e.g. to QLab on port 53000) when a phrase is heard. Only inputs with *Trigger OSC* on send them, so a separate mic can drive cues without going to the website. Guards against accidental cues: an optional *wake word* (a phrase only fires right after it), a cooldown before the same phrase can fire again, **Voice cues** in the menu bar to switch them all off without stopping the transcript, and **Recent cues** showing what fired and what was ignored.
 - Best accuracy comes from a clean feed of just the speaker's mic channel from the board, not a room mic.

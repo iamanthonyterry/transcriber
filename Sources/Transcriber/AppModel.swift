@@ -66,12 +66,28 @@ final class AppModel: ObservableObject {
         if settings.autoStart && !token.isEmpty { Task { @MainActor in self.start() } }
     }
 
-    var statusTint: NSColor? { listening ? .systemRed : (running ? .systemYellow : nil) }
+    /// Set while the feed to the website is silent or clipping during a service (shown in the menu bar).
+    @Published var feedWarning: String? {
+        didSet { if let w = feedWarning, oldValue == nil { Notifier.post("Transcriber needs attention", w) } }
+    }
+
+    var statusTint: NSColor? { feedWarning != nil ? .systemOrange : listening ? .systemRed : (running ? .systemYellow : nil) }
 
     func channelCount(for input: AudioInput) -> Int {
-        let ch = devices.first { $0.name == input.device }?.channels ?? max(devices.first?.channels ?? 1, 1)
+        let ch = device(for: input)?.channels ?? max(devices.first?.channels ?? 1, 1)
         return max(ch, input.channel)
     }
+
+    /// The connected device an input means: the exact one it was set to, else one with the same name
+    /// (a replaced interface, or settings from before devices were remembered by ID). Nil = not connected,
+    /// or the input follows the system default.
+    func device(for input: AudioInput) -> InputDevice? {
+        guard let name = input.device else { return nil }
+        return devices.first { $0.uid == input.deviceUID } ?? devices.first { $0.name == name }
+    }
+
+    /// True when the input names a device that isn't there (it must wait, not fall back to the system default).
+    func isMissing(_ input: AudioInput) -> Bool { input.device != nil && device(for: input) == nil }
 
     /// The input the level meter and "Check audio level" listen to: the one feeding the website, else the first.
     var meterInput: AudioInput { settings.inputs.first { $0.sendToSite } ?? settings.inputs[0] }
@@ -82,7 +98,15 @@ final class AppModel: ObservableObject {
         return "\(input.device ?? "System default") · ch \(input.channel) · \(uses.isEmpty ? "unused" : uses)"
     }
 
-    func refreshDevices() { devices = AudioDevices.inputs() }
+    func refreshDevices() {
+        devices = AudioDevices.inputs()
+        // Remember exactly which device each input uses the first time it is seen.
+        var changed = false
+        for i in settings.inputs.indices where settings.inputs[i].device != nil && settings.inputs[i].deviceUID == nil {
+            if let d = device(for: settings.inputs[i]) { settings.inputs[i].deviceUID = d.uid; changed = true }
+        }
+        if changed { saveSettings() }
+    }
 
     func start() {
         guard runTask == nil else { return }
@@ -110,6 +134,7 @@ final class AppModel: ObservableObject {
         sender = nil
         running = false
         listening = false
+        feedWarning = nil
         status = "Stopped"
         if !restarting { endSession() }
         if let install = pendingUpdate { install() }  // an update was waiting for the service to finish
@@ -122,8 +147,8 @@ final class AppModel: ObservableObject {
             guard !self.running, await MicPermission.request(), !self.running else { return }
             let reporter = LevelReporter { db in Task { @MainActor in self.levelDb = db } }
             let input = self.meterInput
-            let device = self.devices.first { $0.name == input.device }
-            try? self.meterCapture.start(device: device, channel: input.channel,
+            guard !self.isMissing(input) else { return }
+            try? self.meterCapture.start(device: self.device(for: input), channel: input.channel,
                                          onSamples: { reporter.feed($0); self.levelCheck.feed($0) }, onInterrupted: {})
         }
     }
@@ -274,12 +299,37 @@ final class AppModel: ObservableObject {
         lines = []
         lastText = ""
         sessionStart = Date()
+        recorder = nil  // closes the previous session's recording
+    }
+
+    /// The session's audio recording, started the first time it is asked for (nil when recording is off).
+    private var recorder: Recorder?
+
+    private func sessionRecorder() -> Recorder? {
+        guard settings.saveCopy, settings.saveAudio, !settings.saveFolder.isEmpty else { return nil }
+        if recorder == nil {
+            let folder = URL(fileURLWithPath: settings.saveFolder, isDirectory: true)
+            recorder = Recorder(url: freeURL(in: folder, ext: "m4a"), start: sessionStart)
+        }
+        return recorder
+    }
+
+    private var sessionName: String {
+        "Transcript \(sessionStart.formatted(.iso8601.year().month().day())) \(sessionStart.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute()).replacingOccurrences(of: ":", with: "."))"
+    }
+
+    /// "<session name>.<ext>" in `folder`, numbered if that exists already.
+    private func freeURL(in folder: URL, ext: String) -> URL {
+        var url = folder.appendingPathComponent("\(sessionName).\(ext)")
+        var n = 2
+        while FileManager.default.fileExists(atPath: url.path) { url = folder.appendingPathComponent("\(sessionName) \(n).\(ext)"); n += 1 }
+        return url
     }
 
     /// Ends the session, saving a copy if asked, and returns where it was saved.
     @discardableResult
     func endSession() -> URL? {
-        defer { sessionLog = [] }
+        defer { sessionLog = []; recorder = nil }
         guard settings.saveCopy, !settings.saveFolder.isEmpty else { return nil }
         return saveTranscript(to: URL(fileURLWithPath: settings.saveFolder, isDirectory: true))
     }
@@ -288,10 +338,7 @@ final class AppModel: ObservableObject {
     @discardableResult
     func saveTranscript(to folder: URL) -> URL? {
         guard !sessionLog.isEmpty else { return nil }
-        let name = "Transcript \(sessionStart.formatted(.iso8601.year().month().day())) \(sessionStart.formatted(.dateTime.hour(.twoDigits(amPM: .omitted)).minute()).replacingOccurrences(of: ":", with: "."))"
-        var url = folder.appendingPathComponent(name + ".txt")
-        var n = 2
-        while FileManager.default.fileExists(atPath: url.path) { url = folder.appendingPathComponent("\(name) \(n).txt"); n += 1 }
+        let url = freeURL(in: folder, ext: "txt")
         var out = ""
         for line in sessionLog {
             out += line.text + "\n"
@@ -300,6 +347,20 @@ final class AppModel: ObservableObject {
         do {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             try out.write(to: url, atomically: true, encoding: .utf8)
+            if settings.saveSubtitles {
+                // One pair of subtitle files for English and one per translation, named after the transcript.
+                let base = url.deletingPathExtension()
+                for code in [""] + settings.translateTo {
+                    let cues = sessionLog.compactMap { line -> Subtitles.Cue? in
+                        guard let text = code.isEmpty ? line.text : line.translations[code] else { return nil }
+                        return Subtitles.Cue(start: line.start.timeIntervalSince(sessionStart), end: line.end.timeIntervalSince(sessionStart), text: text)
+                    }
+                    guard !cues.isEmpty else { continue }
+                    let named = code.isEmpty ? base : base.appendingPathExtension(code)
+                    try Subtitles.srt(cues).write(to: named.appendingPathExtension("srt"), atomically: true, encoding: .utf8)
+                    try Subtitles.vtt(cues).write(to: named.appendingPathExtension("vtt"), atomically: true, encoding: .utf8)
+                }
+            }
             return url
         } catch {
             status = "Couldn't save transcript: \(error.localizedDescription)"
@@ -359,9 +420,9 @@ final class AppModel: ObservableObject {
         }
     }
 
-    private func show(_ text: String, translations: [String: String]) {
+    private func show(_ text: String, translations: [String: String], spoken: Range<Date>) {
         lastText = text
-        let line = TranscriptLine(text: text, translations: translations)
+        let line = TranscriptLine(start: spoken.lowerBound, end: spoken.upperBound, text: text, translations: translations)
         lines.append(line)
         sessionLog.append(line)
     }
@@ -425,14 +486,14 @@ final class AppModel: ObservableObject {
         let gate = settings.speechOnly ? SpeechGate() : nil
         // Translating happens on its own ordered track so a slow translation never holds up
         // transcribing the next phrase.
-        let (translateStream, translateOut) = AsyncStream.makeStream(of: (text: String, targets: [String], forward: Bool).self)
+        let (translateStream, translateOut) = AsyncStream.makeStream(of: (text: String, targets: [String], forward: Bool, spoken: Range<Date>).self)
         let translateWorker = Task {
             for await item in translateStream {
                 // English and its translations reach the website together
                 // (a slow language is dropped after a few seconds, never holding up the service).
                 let translations = await translator.translate(item.text, to: item.targets)
                 sender.send(item.text, translations: item.forward ? translations : [:])
-                await MainActor.run { self.show(item.text, translations: translations) }
+                await MainActor.run { self.show(item.text, translations: translations, spoken: item.spoken) }
             }
         }
         let worker = Task {
@@ -447,13 +508,14 @@ final class AppModel: ObservableObject {
                 heard[phrase.input.id] = (text, Date())
                 if phrase.input.triggerOSC { await MainActor.run { self.fireOSC(for: text) } }  // before translating, so cues aren't delayed
                 guard phrase.input.sendToSite, await MainActor.run(body: { self.pushingToSite }) else { continue }
+                let spoken = phrase.start..<phrase.end
                 let (targets, forward) = await MainActor.run { (self.settings.translateTo, self.settings.sendTranslations) }
                 guard !targets.isEmpty else {
                     sender.send(text)
-                    await MainActor.run { self.show(text, translations: [:]) }
+                    await MainActor.run { self.show(text, translations: [:], spoken: spoken) }
                     continue
                 }
-                translateOut.yield((text, targets, forward))
+                translateOut.yield((text, targets, forward, spoken))
             }
             translateOut.finish()
         }
@@ -498,19 +560,26 @@ final class AppModel: ObservableObject {
         let interrupted = Interrupt()
         let meterID = meterInput.id
         let reporter = LevelReporter { db in Task { @MainActor in self.levelDb = db } }
+        let recorder = inService ? sessionRecorder() : nil  // records the input that feeds the website
+        let watch = inService && settings.inputs.contains(where: { $0.sendToSite }) ? FeedWatch(minDb: minDb) : nil
         var segmenters: [(Segmenter, DispatchQueue, AudioInput)] = []
         captures = [:]
-        for input in inputs {
+        // An input whose device is unplugged waits for it; it never falls back to another microphone.
+        let missing = inputs.filter(isMissing)
+        let missingNote = missing.isEmpty ? "" : " (“\(missing[0].device ?? "")” isn’t connected)"
+        for input in inputs where !isMissing(input) {
             let segmenter = Segmenter(minDb: minDb)
             let queue = DispatchQueue(label: "audio.segment.\(input.id)")
             let capture = AudioCapture()
             let isMeter = input.id == meterID
             do {
-                try capture.start(device: devices.first { $0.name == input.device }, channel: input.channel,
+                try capture.start(device: device(for: input), channel: input.channel,
                                   onSamples: { samples in
                                       if isMeter {
                                           reporter.feed(samples)
                                           self.levelCheck.feed(samples)
+                                          recorder?.feed(samples)
+                                          watch?.feed(samples)
                                       }
                                       queue.async { segmenter.feed(samples: samples).forEach { sink.push(Phrase(input: input, audio: $0)) } }
                                   },
@@ -524,14 +593,23 @@ final class AppModel: ObservableObject {
             captures[input.id] = capture
             segmenters.append((segmenter, queue, input))
         }
-        status = inService ? "Listening" : "Listening for OSC only"
-        listening = true
+        status = segmenters.isEmpty ? "Waiting for the audio input" + missingNote : (inService ? "Listening" : "Listening for OSC only") + missingNote
+        listening = !segmenters.isEmpty
+        var seconds = 0
         while !Task.isCancelled && !interrupted.flag && (!settings.scheduleOn || Schedule.inWindow(settings)) == inService {
             try? await Task.sleep(for: .seconds(1))
+            seconds += 1
+            let warning = watch?.warning(silentAfter: settings.silenceWarnMinutes)
+            if warning != feedWarning { feedWarning = warning }
+            if !missing.isEmpty, seconds % 3 == 0 {  // plugged back in? start over with it
+                refreshDevices()
+                if missing.contains(where: { !isMissing($0) }) { break }
+            }
         }
         stopCaptures()
         listening = false
         levelDb = -90
+        feedWarning = nil
         for (segmenter, queue, input) in segmenters {
             queue.sync { if let tail = segmenter.flush() { sink.push(Phrase(input: input, audio: tail)) } }
         }
@@ -561,7 +639,8 @@ final class AppModel: ObservableObject {
 
 struct TranscriptLine: Identifiable {
     let id = UUID()
-    let date = Date()
+    let start: Date  // when the phrase was spoken, not when it was transcribed
+    let end: Date
     let text: String
     var translations: [String: String] = [:]
 }
@@ -569,6 +648,8 @@ struct TranscriptLine: Identifiable {
 private struct Phrase: Sendable {
     let input: AudioInput
     let audio: [Float]
+    let end = Date()  // phrases are queued the moment they finish
+    var start: Date { end.addingTimeInterval(-Double(audio.count) / Double(sampleRate)) }
 }
 
 /// Phrases waiting for Whisper. Each side keeps its newest 8 (falling behind drops the oldest), and phrases

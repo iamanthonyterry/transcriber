@@ -3,6 +3,7 @@ import CoreAudio
 
 struct InputDevice: Identifiable, Hashable {
     let id: AudioDeviceID
+    let uid: String   // stays the same across reboots and tells two identical interfaces apart
     let name: String
     let channels: Int
 }
@@ -16,7 +17,7 @@ enum AudioDevices {
         guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &addr, 0, nil, &size, &ids) == noErr else { return [] }
         return ids.compactMap { id in
             let ch = inputChannels(id)
-            return ch > 0 ? InputDevice(id: id, name: name(id), channels: ch) : nil
+            return ch > 0 ? InputDevice(id: id, uid: string(id, kAudioDevicePropertyDeviceUID) ?? name(id), name: name(id), channels: ch) : nil
         }
     }
 
@@ -39,12 +40,14 @@ enum AudioDevices {
         return list.reduce(0) { $0 + Int($1.mNumberChannels) }
     }
 
-    static func name(_ id: AudioDeviceID) -> String {
-        var addr = AudioObjectPropertyAddress(mSelector: kAudioObjectPropertyName, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-        var name: Unmanaged<CFString>?
+    static func name(_ id: AudioDeviceID) -> String { string(id, kAudioObjectPropertyName) ?? "Unknown" }
+
+    private static func string(_ id: AudioDeviceID, _ selector: AudioObjectPropertySelector) -> String? {
+        var addr = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
+        var value: Unmanaged<CFString>?
         var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-        guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &name) == noErr, let n = name else { return "Unknown" }
-        return n.takeRetainedValue() as String
+        guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &value) == noErr, let v = value else { return nil }
+        return v.takeRetainedValue() as String
     }
 }
 
