@@ -2,9 +2,15 @@ import CoreML
 import Foundation
 import WhisperKit
 
-/// Whisper (large-v3 turbo, quantized) running on the Apple Neural Engine / GPU through Core ML.
+/// Whisper running on the Apple Neural Engine / GPU through Core ML. The transcript uses large-v3 turbo
+/// (quantized); voice commands get a small English model of their own, which answers several times sooner.
 actor SpeechEngine {
-    static let variant = "openai_whisper-large-v3-v20240930_turbo_632MB"
+    static let transcriptVariant = "openai_whisper-large-v3-v20240930_turbo_632MB"
+    static let commandVariant = "openai_whisper-base.en"
+    let variant: String
+
+    init(variant: String = SpeechEngine.transcriptVariant) { self.variant = variant }
+
     static let repo = "argmaxinc/whisperkit-coreml"
 
     /// Where models live. To set up a Mac with no internet, copy a model folder here beforehand.
@@ -23,21 +29,24 @@ actor SpeechEngine {
     func load(progress: @escaping @Sendable (Double) -> Void, stage: @escaping @Sendable (String) -> Void) async throws {
         guard kit == nil else { return }
         let folder: URL
-        if let local = Self.localModelFolder() {
+        if let local = Self.localModelFolder(variant) {
             folder = local
         } else {
             stage("Downloading speech model…")
-            folder = try await WhisperKit.download(variant: Self.variant, downloadBase: Self.modelsDir, from: Self.repo) { p in
+            folder = try await WhisperKit.download(variant: variant, downloadBase: Self.modelsDir, from: Self.repo) { p in
                 progress(p.fractionCompleted)
             }
         }
         stage("Preparing speech model (first time takes a few minutes)…")
+        // The command model stays on the CPU: about 0.4 s a phrase whatever else is happening, where on the
+        // Neural Engine it took 0.2 s alone but up to 1.6 s while the transcript model was working.
+        let compute = variant == Self.commandVariant ? ModelComputeOptions(audioEncoderCompute: .cpuOnly, textDecoderCompute: .cpuOnly) : nil
         let config = WhisperKitConfig(
-            downloadBase: Self.modelsDir, modelFolder: folder.path, verbose: false, logLevel: .none, prewarm: true, load: true, download: false)
+            downloadBase: Self.modelsDir, modelFolder: folder.path, computeOptions: compute, verbose: false, logLevel: .none, prewarm: true, load: true, download: false)
         kit = try await WhisperKit(config)
     }
 
-    private static func localModelFolder() -> URL? {
+    static func localModelFolder(_ variant: String) -> URL? {
         let fm = FileManager.default
         let direct = modelsDir.appendingPathComponent(variant)
         let hub = modelsDir.appendingPathComponent("models/\(repo)/\(variant)")

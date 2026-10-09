@@ -5,11 +5,11 @@ import Foundation
 /// prints each phrase. For testing without a mixer. Sends nothing to the website.
 /// Add `--vocabulary "Name, Term"` to try names and terms, and `--commands` to treat it as a commands-only input.
 enum FileTest {
-    static func run(path: String, vocabulary: String = "", commands: Bool = false) {
+    static func run(path: String, vocabulary: String = "", commands: Bool = false, model: String? = nil) {
         Task.detached {
             do {
                 let samples = try load(path)
-                let engine = SpeechEngine()
+                let engine = SpeechEngine(variant: model ?? (commands ? SpeechEngine.commandVariant : SpeechEngine.transcriptVariant))
                 try await engine.load(progress: { print(String(format: "download %.0f%%", $0 * 100)) }, stage: { print($0) })
                 let seg = Segmenter(minDb: -50, endPause: commands ? 0.3 : 0.5)
                 var phrases = seg.feed(samples: samples)

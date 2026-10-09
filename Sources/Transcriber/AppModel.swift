@@ -39,6 +39,12 @@ final class AppModel: ObservableObject {
     private let pco = PCOClient()
     private let translator = Translator()
     private let engine = SpeechEngine()
+    /// A small model just for commands-only inputs, so a cue waits for neither the transcript nor a big decode.
+    private let commandEngine = SpeechEngine(variant: SpeechEngine.commandVariant)
+    private let commandsFast = Interrupt()  // set once that model is loaded; until then commands use the main one
+    private var commandLoad: Task<Void, Never>?
+    /// What the quick command model is doing, for Settings (nil when it isn't wanted).
+    @Published var commandModelNote: String?
     private var captures: [UUID: AudioCapture] = [:]
     private let cues = CueSender()
     private let oscIn = OSCListener()
@@ -448,6 +454,30 @@ final class AppModel: ObservableObject {
     /// The Test button: a rule with a number in it is tried with 1.
     func testCue(_ rule: OSCRule) { sendOSC(rule.filled(with: "1")) }
 
+    /// Loads the quick command model in the background the first time it is wanted. Listening never waits
+    /// for it, and a Mac that can't download it just keeps using the main model for commands.
+    private func prepareCommandModel() {
+        guard settings.oscFastModel, hasVoiceCues, settings.inputs.contains(where: \.commandsOnly) else {
+            commandsFast.flag = false
+            commandModelNote = nil
+            return
+        }
+        guard commandLoad == nil else { return }
+        commandModelNote = "Getting the quick command model ready…"
+        commandLoad = Task { @MainActor in
+            do {
+                try await commandEngine.load(
+                    progress: { p in Task { @MainActor in self.commandModelNote = "Downloading the quick command model… \(Int(p * 100))%" } },
+                    stage: { _ in })
+                commandsFast.flag = settings.oscFastModel
+                commandModelNote = "Quick command model is ready."
+            } catch {
+                commandModelNote = "Couldn’t get the quick command model (\(error.localizedDescription)). Commands use the main model until the next start."
+            }
+            commandLoad = nil
+        }
+    }
+
     /// Opens what the cue settings need: the MIDI source, and the port that takes OSC commands.
     private func connectControls() {
         cues.prepare(settings.oscRules)
@@ -514,6 +544,7 @@ final class AppModel: ObservableObject {
         }
         guard !Task.isCancelled else { return }
 
+        prepareCommandModel()
         let sender = Sender(url: settings.url, token: token) { s in Task { @MainActor in self.status = s } }
         self.sender = sender
         await sendResetIfNeeded(sender)
@@ -564,7 +595,19 @@ final class AppModel: ObservableObject {
             }
             translateOut.finish()
         }
-        defer { phraseQueue.finish(); worker.cancel(); translateWorker.cancel() }
+        // Commands-only inputs have their own queue, model and worker once the quick model is loaded.
+        let commandQueue = PhraseQueue()
+        let commandWorker = Task {
+            let gate = gate == nil ? nil : SpeechGate()  // its own: the two workers run at the same time
+            while let phrase = await commandQueue.next(), !Task.isCancelled {
+                if let gate, (gate.speechConfidence(SpeechEngine.normalized(phrase.audio)) ?? 1) < 0.3 { continue }
+                let vocabulary = await MainActor.run { Cues.vocabulary(self.settings.oscRules, wakeWord: self.settings.oscWakeWord) }
+                guard let text = try? await commandEngine.text(for: phrase.audio, corrections: corrections, vocabulary: vocabulary, expectingPrompt: true),
+                      !text.isEmpty else { continue }
+                await MainActor.run { self.fireOSC(for: text) }
+            }
+        }
+        defer { phraseQueue.finish(); worker.cancel(); translateWorker.cancel(); commandQueue.finish(); commandWorker.cancel() }
 
         heartbeatTask = Task {
             while !Task.isCancelled {
@@ -589,7 +632,7 @@ final class AppModel: ObservableObject {
                 while !Task.isCancelled && !(settings.scheduleOn ? Schedule.inWindow(settings) : true) { try? await Task.sleep(for: .seconds(1)) }
                 continue
             }
-            if await listenUntilDone(phraseQueue, inputs: active, inService: inService) == false { return }
+            if await listenUntilDone(phraseQueue, commands: commandQueue, inputs: active, inService: inService) == false { return }
             if inService && settings.scheduleOn && !Schedule.inWindow(settings) && !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(4))  // let the last phrase finish transcribing
                 if let saved = endSession() { status = "Saved \(saved.lastPathComponent)" }
@@ -600,7 +643,8 @@ final class AppModel: ObservableObject {
     }
 
     /// Listens on every input until stopped, the schedule window ends, or the audio setup changes. Returns false on a fatal error.
-    private func listenUntilDone(_ sink: PhraseQueue, inputs: [AudioInput], inService: Bool) async -> Bool {
+    private func listenUntilDone(_ sink: PhraseQueue, commands: PhraseQueue, inputs: [AudioInput], inService: Bool) async -> Bool {
+        let commandsFast = commandsFast
         let minDb = settings.minDb
         let interrupted = Interrupt()
         let meterID = meterInput.id
@@ -626,7 +670,10 @@ final class AppModel: ObservableObject {
                                           recorder?.feed(samples)
                                           watch?.feed(samples)
                                       }
-                                      queue.async { segmenter.feed(samples: samples).forEach { sink.push(Phrase(input: input, audio: $0)) } }
+                                      queue.async {
+                                          let to = input.commandsOnly && commandsFast.flag ? commands : sink
+                                          segmenter.feed(samples: samples).forEach { to.push(Phrase(input: input, audio: $0)) }
+                                      }
                                   },
                                   onInterrupted: { interrupted.flag = true })
             } catch {
@@ -656,7 +703,9 @@ final class AppModel: ObservableObject {
         levelDb = -90
         feedWarning = nil
         for (segmenter, queue, input) in segmenters {
-            queue.sync { if let tail = segmenter.flush() { sink.push(Phrase(input: input, audio: tail)) } }
+            queue.sync {
+                if let tail = segmenter.flush() { (input.commandsOnly && commandsFast.flag ? commands : sink).push(Phrase(input: input, audio: tail)) }
+            }
         }
         if interrupted.flag && !Task.isCancelled {
             status = "Audio changed — reconnecting…"

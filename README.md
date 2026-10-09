@@ -14,7 +14,7 @@ text does (it queues and catches up if the connection drops).
 
 A Mac that was set up with the old Python app picks up its settings automatically.
 
-**Fully offline setup:** copy a model folder to `~/Library/Application Support/Transcriber/Models/openai_whisper-large-v3-v20240930_turbo_632MB` (it contains `AudioEncoder.mlmodelc` etc.) before first launch and nothing is downloaded.
+**Fully offline setup:** copy a model folder to `~/Library/Application Support/Transcriber/Models/openai_whisper-large-v3-v20240930_turbo_632MB` (it contains `AudioEncoder.mlmodelc` etc.) before first launch and nothing is downloaded. Voice cues from a commands-only input also use a small model, `openai_whisper-base.en` (~150 MB), fetched the first time it is needed; copy that folder alongside for an offline Mac, or the main model is used instead.
 
 ## Using it
 

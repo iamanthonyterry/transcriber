@@ -9,7 +9,8 @@ struct TranscriberApp: App {
     init() {
         if let i = CommandLine.arguments.firstIndex(of: "--transcribe-file"), i + 1 < CommandLine.arguments.count {
             let v = CommandLine.arguments.firstIndex(of: "--vocabulary").flatMap { $0 + 1 < CommandLine.arguments.count ? CommandLine.arguments[$0 + 1] : nil }
-            FileTest.run(path: CommandLine.arguments[i + 1], vocabulary: v ?? "", commands: CommandLine.arguments.contains("--commands"))  // dev/testing: print phrases from an audio file, then exit
+            FileTest.run(path: CommandLine.arguments[i + 1], vocabulary: v ?? "", commands: CommandLine.arguments.contains("--commands"),
+                         model: CommandLine.arguments.firstIndex(of: "--model").flatMap { $0 + 1 < CommandLine.arguments.count ? CommandLine.arguments[$0 + 1] : nil })  // dev/testing: print phrases from an audio file, then exit
         }
         if let i = CommandLine.arguments.firstIndex(of: "--level-check"), i + 1 < CommandLine.arguments.count {
             FileTest.levelCheck(path: CommandLine.arguments[i + 1])  // dev/testing: judge an audio file's level, then exit
@@ -182,21 +183,24 @@ struct SettingsView: View {
                 }
                 HStack {
                     Button(model.token.isEmpty ? "Sign in with website…" : "Change campus…") { model.signInWithWebsite() }
-                        .disabled(model.signInBusy)
+                        .disabled(model.signInBusy || model.running)
                     if model.signInBusy {
                         ProgressView().controlSize(.small)
                         Text("Finish in your browser").font(.caption).foregroundStyle(.secondary)
                         Button("Cancel") { model.cancelSignIn() }
                     }
                     Spacer()
-                    if !model.token.isEmpty && !model.signInBusy { Button("Disconnect", role: .destructive) { model.disconnect() } }
+                    if !model.token.isEmpty && !model.signInBusy { Button("Disconnect", role: .destructive) { model.disconnect() }.disabled(model.running) }
                 }
+                if model.running { StopToChange("Stop transcribing to change where the transcript is sent.") }
                 if let e = model.signInError { Text(e).font(.caption).foregroundStyle(.orange) }
                 Text("Sign in with the same email as the website’s admin, then pick the campus this Mac’s transcript goes to.")
                     .font(.caption).foregroundStyle(.secondary)
                 DisclosureGroup("Advanced") {
-                    TextField("Transcript address", text: $model.settings.url)
-                    SecureField("Campus key", text: $model.token)
+                    Field("Transcript address") { TextField("Transcript address", text: $model.settings.url, prompt: Text("https://example.com/api/transcript")) }
+                        .disabled(model.running)
+                    Field("Campus key") { SecureField("Campus key", text: $model.token, prompt: Text("Paste the key here")) }
+                        .disabled(model.running)
                     Text("Only needed to point at a different site or to paste a campus key by hand (from the campus’s page in the website’s admin).")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -298,11 +302,13 @@ struct SettingsView: View {
                 Toggle("Also save subtitle files (.srt and .vtt)", isOn: $model.settings.saveSubtitles)
                     .disabled(!model.settings.saveCopy)
                 Toggle("Also record the audio", isOn: $model.settings.saveAudio)
-                    .disabled(!model.settings.saveCopy)
+                    .disabled(!model.settings.saveCopy || model.running)
+                if model.running { StopToChange("Stop transcribing to turn recording on or off: a recording covers a whole session.") }
                 Text("Subtitles are timed from the start of the session and line up with the recording, which uses about 20 MB an hour. Each translation gets its own subtitle files.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Audio inputs") {
+                if model.running { StopToChange("Stop transcribing to change the audio inputs.") }
                 ForEach($model.settings.inputs) { $input in
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
@@ -312,28 +318,31 @@ struct SettingsView: View {
                                 Button(role: .destructive) {
                                     model.settings.inputs.removeAll { $0.id == input.id }
                                 } label: { Image(systemName: "trash") }
+                                .disabled(model.running)
                             }
                         }
                         HStack {
                             Toggle("Send to website", isOn: $input.sendToSite)
                             Toggle("Trigger OSC", isOn: $input.triggerOSC)
                         }
+                        .disabled(model.running)
                     }
                     .padding(.vertical, 2)
                 }
                 Button("Add an input") { model.settings.inputs.append(AudioInput(sendToSite: false, triggerOSC: true)) }
+                    .disabled(model.running)
                 Text("Every input is listened to at once. “Send to website” puts its speech in the transcript; “Trigger OSC” runs the phrases below on it. An input can do both. The level meter and sensitivity below follow the first input that sends to the website.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("OSC") {
-                HStack {
-                    TextField("Send to", text: $model.settings.oscHost)
-                    TextField("Port", value: $model.settings.oscPort, format: .number.grouping(.never)).frame(width: 70)
+                HStack(alignment: .top) {
+                    Field("Send OSC to") { TextField("Send OSC to", text: $model.settings.oscHost, prompt: Text("127.0.0.1")) }
+                    Field("Port", width: 80) { TextField("Port", value: $model.settings.oscPort, format: .number.grouping(.never), prompt: Text("53000")) }
                 }
                 ForEach($model.settings.oscRules) { $r in
-                    VStack(alignment: .leading, spacing: 4) {
-                        HStack {
-                            TextField("When I say", text: $r.phrase)
+                    VStack(alignment: .leading, spacing: 8) {
+                        HStack(alignment: .bottom) {
+                            Field("When I say") { TextField("When I say", text: $r.phrase, prompt: Text("next slide")) }
                             Button("Test") { model.testCue(r) }.disabled(!r.isSendable)
                             Button(role: .destructive) {
                                 model.settings.oscRules.removeAll { $0.id == r.id }
@@ -347,33 +356,36 @@ struct SettingsView: View {
                         }
                         switch r.kind {
                         case .osc:
-                            HStack {
-                                TextField("Address", text: $r.address, prompt: Text("/cue/{number}/start"))
-                                TextField("Value (optional)", text: $r.argument).frame(width: 130)
+                            HStack(alignment: .top) {
+                                Field("Address") { TextField("Address", text: $r.address, prompt: Text("/cue/{number}/start")) }
+                                Field("Value (optional)", width: 130) { TextField("Value", text: $r.argument, prompt: Text("1")) }
                             }
-                            TextField("To (optional)", text: $r.destination, prompt: Text("host:port, if not the one above"))
+                            Field("Send to (optional)") { TextField("Send to", text: $r.destination, prompt: Text("host:port, if not the one above")) }
                         case .httpGet:
-                            TextField("Address", text: $r.address, prompt: Text("http://192.168.1.20:8000/…"))
+                            Field("Address") { TextField("Address", text: $r.address, prompt: Text("http://192.168.1.20:8000/…")) }
                         case .httpPost:
-                            TextField("Address", text: $r.address, prompt: Text("http://127.0.0.1:8000/api/location/1/0/1/press"))
-                            TextField("Body (optional)", text: $r.argument)
+                            Field("Address") { TextField("Address", text: $r.address, prompt: Text("http://127.0.0.1:8000/api/location/1/0/1/press")) }
+                            Field("Body (optional)") { TextField("Body", text: $r.argument, prompt: Text("{\"on\": true}")) }
                         case .midi:
-                            HStack {
-                                TextField("Message", text: $r.address, prompt: Text("note 60, cc 20 or program 5 (add ch 2)"))
-                                TextField("Value (0–127)", text: $r.argument).frame(width: 130)
+                            HStack(alignment: .top) {
+                                Field("Message") { TextField("Message", text: $r.address, prompt: Text("note 60, cc 20 or program 5 (add ch 2)")) }
+                                Field("Value (0–127)", width: 130) { TextField("Value", text: $r.argument, prompt: Text("127")) }
                             }
                         }
                         if !r.isSendable && r.address.count > 1 {
                             Text("This can’t be sent as written, so the phrase won’t fire.").font(.caption).foregroundStyle(.orange)
                         }
                     }
-                    .padding(.vertical, 2)
+                    .padding(.vertical, 4)
                 }
                 Button("Add a phrase") { model.settings.oscRules.append(OSCRule()) }
-                TextField("Listen for OSC on port", value: $model.settings.oscInPort, format: .number.grouping(.never), prompt: Text("off"))
+                Toggle("Quick model for commands-only inputs", isOn: $model.settings.oscFastModel)
+                Text(model.commandModelNote ?? "An input that only triggers cues gets a small speech model of its own, so a cue fires about a second sooner and never waits for the transcript. It is a one-time 150 MB download; without internet the main model is used.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Field("Listen for OSC on port", width: 80) { TextField("Listen for OSC on port", value: $model.settings.oscInPort, format: .number.grouping(.never), prompt: Text("off")) }
                 Text("0 is off. Any device on the network can then send /transcriber/start, /stop, /clear, /save, /cues/on and /cues/off to this Mac.")
                     .font(.caption).foregroundStyle(.secondary)
-                TextField("Wake word (optional)", text: $model.settings.oscWakeWord)
+                Field("Wake word (optional)") { TextField("Wake word", text: $model.settings.oscWakeWord, prompt: Text("booth")) }
                 Text("With a wake word, a phrase only fires when said right after it: “\(model.settings.oscWakeWord.isEmpty ? "booth" : model.settings.oscWakeWord), next slide”, or the wake word, a breath, then the phrase. Pick an ordinary word that isn’t said in the service.")
                     .font(.caption).foregroundStyle(.secondary)
                 Stepper("The same phrase can fire again after \(model.settings.oscCooldown.formatted()) s", value: $model.settings.oscCooldown, in: 0...30, step: 0.5)
@@ -386,12 +398,16 @@ Text("Only inputs with “Trigger OSC” on send these, and “Voice cues” in 
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Tuning") {
-                TextField("Names and terms", text: $model.settings.vocabulary, axis: .vertical)
-                    .lineLimit(2...5)
+                Field("Names and terms") {
+                    TextField("Names and terms", text: $model.settings.vocabulary, prompt: Text("Pastor Jordan, Lifepoint, Ephesians"), axis: .vertical)
+                        .lineLimit(2...5)
+                }
                 Text("Names, places and unusual words to expect, separated by commas or lines (e.g. this week’s speaker, the series title). Put the most important first and keep the list short: about ten names fit, and a longer list adds up to half a second of delay.")
                     .font(.caption).foregroundStyle(.secondary)
-                TextField("Corrections", text: $model.settings.corrections, axis: .vertical)
-                    .lineLimit(3...6)
+                Field("Corrections") {
+                    TextField("Corrections", text: $model.settings.corrections, prompt: Text("Life Point => Lifepoint"), axis: .vertical)
+                        .lineLimit(3...6)
+                }
                 Text("One per line, written heard => correct (e.g. Life Point => Lifepoint). Fixes names and places Whisper keeps getting wrong.")
                     .font(.caption).foregroundStyle(.secondary)
                 Toggle("Skip music, singing and noise", isOn: $model.settings.speechOnly)
@@ -439,6 +455,38 @@ Text("Only inputs with “Trigger OSC” on send these, and “Voice cues” in 
         .modifier(LanguageDownloader(model: model))
         .onAppear { model.startMeter() }
         .onDisappear { model.stopMeter() }
+    }
+}
+
+/// Says why the controls next to it are greyed out while a transcript is running.
+struct StopToChange: View {
+    let text: String
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Label(text, systemImage: "lock.fill").font(.caption).foregroundStyle(.secondary)
+    }
+}
+
+/// A text box with its name above it. A grouped form draws a text field as bare right-aligned text, with
+/// nothing to show where to click; this gives it a border and leaves room for an example to type over.
+struct Field<Content: View>: View {
+    let label: String
+    let width: CGFloat?
+    let content: Content
+
+    init(_ label: String, width: CGFloat? = nil, @ViewBuilder content: () -> Content) {
+        self.label = label
+        self.width = width
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label).font(.caption).foregroundStyle(.secondary)
+            content.labelsHidden().textFieldStyle(.roundedBorder).multilineTextAlignment(.leading)
+        }
+        .frame(width: width)
     }
 }
 
