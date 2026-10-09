@@ -12,7 +12,8 @@ final class SpeechGate {
     private let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: Double(sampleRate), channels: 1, interleaved: false)!
     private let window = 1.0  // seconds of audio the classifier judges at a time
 
-    /// How sure the classifier is that the phrase is speech, 0...1 (nil when it couldn't be judged).
+    /// How sure the classifier is that the phrase is speech, 0...1. Nil when it couldn't be judged, which
+    /// callers treat as speech: losing real words is worse than transcribing a noise.
     func speechConfidence(_ audio: [Float]) -> Double? {
         let frames = max(audio.count, Int(window * Double(sampleRate)))  // shorter phrases are padded with silence
         guard !audio.isEmpty, let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)),
@@ -30,9 +31,6 @@ final class SpeechGate {
         let best = scores.speech.sorted(by: >).prefix(max(1, (scores.speech.count + 1) / 2))
         return best.isEmpty ? nil : best.reduce(0, +) / Double(best.count)
     }
-
-    /// Unjudgeable audio counts as speech: losing real words is worse than transcribing a noise.
-    func isSpeech(_ audio: [Float]) -> Bool { (speechConfidence(audio) ?? 1) >= Self.threshold }
 
     private final class Scores: NSObject, SNResultsObserving {
         var speech: [Double] = []

@@ -46,19 +46,22 @@ actor SpeechEngine {
 
     /// `vocabulary` (names and terms to expect) and `previous` (what was just said on this input) are given
     /// to Whisper as its prompt, so names come out spelled right and a phrase cut mid-sentence carries on.
-    func text(for audio: [Float], corrections: String, vocabulary: String = "", previous: String = "") async throws -> String {
+    /// `expectingPrompt` is for command inputs, where the prompt is the very phrases being listened for.
+    func text(for audio: [Float], corrections: String, vocabulary: String = "", previous: String = "", expectingPrompt: Bool = false) async throws -> String {
         let audio = Self.normalized(audio)
         let terms = Self.terms(vocabulary: vocabulary, corrections: corrections)
         let prompt = promptTokens(terms: terms, previous: previous)
         var text = try await decode(audio, prompt: prompt)
         // On noise or music a prompted Whisper tends to recite its prompt. When the result is nothing but
         // prompt words, listen again without one: real speech still comes back as something, noise doesn't.
-        if prompt != nil, Self.isEcho(text, of: terms + [previous]), try await decode(audio, prompt: nil).isEmpty { text = "" }
+        if prompt != nil, !expectingPrompt, Self.isEcho(text, of: terms + [previous]), try await decode(audio, prompt: nil).isEmpty { text = "" }
         return Self.correct(text, with: corrections)
     }
 
     private func decode(_ audio: [Float], prompt: [Int]?) async throws -> String {
         guard let kit else { return "" }
+        // WhisperKit skips anything of a second or less, which is most one- or two-word commands.
+        let audio = audio.count > sampleRate * 5 / 4 ? audio : audio + [Float](repeating: 0, count: sampleRate * 5 / 4 - audio.count)
         var options = DecodingOptions(
             task: .transcribe, language: "en", temperature: 0, temperatureFallbackCount: 2, skipSpecialTokens: true, withoutTimestamps: true,
             suppressBlank: true, compressionRatioThreshold: 2.4, logProbThreshold: -1.0, noSpeechThreshold: 0.6)

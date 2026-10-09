@@ -9,7 +9,7 @@ struct TranscriberApp: App {
     init() {
         if let i = CommandLine.arguments.firstIndex(of: "--transcribe-file"), i + 1 < CommandLine.arguments.count {
             let v = CommandLine.arguments.firstIndex(of: "--vocabulary").flatMap { $0 + 1 < CommandLine.arguments.count ? CommandLine.arguments[$0 + 1] : nil }
-            FileTest.run(path: CommandLine.arguments[i + 1], vocabulary: v ?? "")  // dev/testing: print phrases from an audio file, then exit
+            FileTest.run(path: CommandLine.arguments[i + 1], vocabulary: v ?? "", commands: CommandLine.arguments.contains("--commands"))  // dev/testing: print phrases from an audio file, then exit
         }
         if let i = CommandLine.arguments.firstIndex(of: "--level-check"), i + 1 < CommandLine.arguments.count {
             FileTest.levelCheck(path: CommandLine.arguments[i + 1])  // dev/testing: judge an audio file's level, then exit
@@ -334,19 +334,45 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
                             TextField("When I say", text: $r.phrase)
-                            Button("Test") { model.sendOSC(r) }
+                            Button("Test") { model.testCue(r) }.disabled(!r.isSendable)
                             Button(role: .destructive) {
                                 model.settings.oscRules.removeAll { $0.id == r.id }
                             } label: { Image(systemName: "trash") }
                         }
-                        HStack {
-                            TextField("Address", text: $r.address)
-                            TextField("Value (optional)", text: $r.argument).frame(width: 130)
+                        Picker("Send", selection: $r.kind) {
+                            Text("OSC").tag(OSCRule.Kind.osc)
+                            Text("Web request (GET)").tag(OSCRule.Kind.httpGet)
+                            Text("Web request (POST)").tag(OSCRule.Kind.httpPost)
+                            Text("MIDI").tag(OSCRule.Kind.midi)
+                        }
+                        switch r.kind {
+                        case .osc:
+                            HStack {
+                                TextField("Address", text: $r.address, prompt: Text("/cue/{number}/start"))
+                                TextField("Value (optional)", text: $r.argument).frame(width: 130)
+                            }
+                            TextField("To (optional)", text: $r.destination, prompt: Text("host:port, if not the one above"))
+                        case .httpGet:
+                            TextField("Address", text: $r.address, prompt: Text("http://192.168.1.20:8000/…"))
+                        case .httpPost:
+                            TextField("Address", text: $r.address, prompt: Text("http://127.0.0.1:8000/api/location/1/0/1/press"))
+                            TextField("Body (optional)", text: $r.argument)
+                        case .midi:
+                            HStack {
+                                TextField("Message", text: $r.address, prompt: Text("note 60, cc 20 or program 5 (add ch 2)"))
+                                TextField("Value (0–127)", text: $r.argument).frame(width: 130)
+                            }
+                        }
+                        if !r.isSendable && r.address.count > 1 {
+                            Text("This can’t be sent as written, so the phrase won’t fire.").font(.caption).foregroundStyle(.orange)
                         }
                     }
                     .padding(.vertical, 2)
                 }
                 Button("Add a phrase") { model.settings.oscRules.append(OSCRule()) }
+                TextField("Listen for OSC on port", value: $model.settings.oscInPort, format: .number.grouping(.never), prompt: Text("off"))
+                Text("0 is off. Any device on the network can then send /transcriber/start, /stop, /clear, /save, /cues/on and /cues/off to this Mac.")
+                    .font(.caption).foregroundStyle(.secondary)
                 TextField("Wake word (optional)", text: $model.settings.oscWakeWord)
                 Text("With a wake word, a phrase only fires when said right after it: “\(model.settings.oscWakeWord.isEmpty ? "booth" : model.settings.oscWakeWord), next slide”, or the wake word, a breath, then the phrase. Pick an ordinary word that isn’t said in the service.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -356,7 +382,7 @@ struct SettingsView: View {
                         ForEach(model.cueLog.prefix(5)) { Text(CueRow.summary($0)).font(.caption).foregroundStyle($0.outcome == .sent ? .primary : .secondary) }
                     }
                 }
-                Text("Only inputs with “Trigger OSC” on send these, and “Voice cues” in the menu bar switches them all off. A phrase matches whole words, ignoring case and punctuation. The value can be a whole number, a decimal, or text; leave it empty to send no value.")
+Text("Only inputs with “Trigger OSC” on send these, and “Voice cues” in the menu bar switches them all off. A phrase matches whole words, ignoring case and punctuation. Write {number} in a phrase to take a spoken number (“go cue {number}”) and again in the address or value to use it. MIDI goes out on a source named “Transcriber” that other apps can pick as an input.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Tuning") {

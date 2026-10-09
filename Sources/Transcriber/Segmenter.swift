@@ -9,6 +9,7 @@ let frameSize = 480  // 30 ms
 /// translations appear without waiting for a full sentence.
 final class Segmenter {
     private let minDb: Float
+    private let endPause: Float
     private let marginDb: Float = 9
     private var floor: Float
     private var preroll: [[Float]] = []  // 300 ms before speech starts
@@ -18,7 +19,9 @@ final class Segmenter {
     private var speechFrames = 0
     private var pending: [Float] = []
 
-    init(minDb: Double) {
+    /// `endPause` is how long a silence ends a phrase: shorter reacts sooner but splits slow talkers.
+    init(minDb: Double, endPause: Float = 0.5) {
+        self.endPause = endPause
         self.minDb = Float(minDb)
         floor = Float(minDb) - 6
     }
@@ -67,7 +70,7 @@ final class Segmenter {
         silentFrames = loud ? 0 : silentFrames + 1
         let seconds = Float(buf.count * frameSize) / Float(sampleRate)
         let pause = Float(silentFrames * frameSize) / Float(sampleRate)
-        let done = pause >= 0.5 || (seconds >= 5 && pause >= 0.25) || seconds >= 15
+        let done = pause >= endPause || (seconds >= 5 && pause >= 0.25) || seconds >= 15
         guard done else { return nil }
         let audio = buf.flatMap { $0 }
         reset()

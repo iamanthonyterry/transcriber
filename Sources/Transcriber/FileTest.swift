@@ -3,15 +3,15 @@ import Foundation
 
 /// `Transcriber --transcribe-file x.wav`: runs the same segmenter + Whisper pipeline on a recording and
 /// prints each phrase. For testing without a mixer. Sends nothing to the website.
-/// Add `--vocabulary "Name, Term"` to try names and terms.
+/// Add `--vocabulary "Name, Term"` to try names and terms, and `--commands` to treat it as a commands-only input.
 enum FileTest {
-    static func run(path: String, vocabulary: String = "") {
+    static func run(path: String, vocabulary: String = "", commands: Bool = false) {
         Task.detached {
             do {
                 let samples = try load(path)
                 let engine = SpeechEngine()
                 try await engine.load(progress: { print(String(format: "download %.0f%%", $0 * 100)) }, stage: { print($0) })
-                let seg = Segmenter(minDb: -50)
+                let seg = Segmenter(minDb: -50, endPause: commands ? 0.3 : 0.5)
                 var phrases = seg.feed(samples: samples)
                 if let tail = seg.flush() { phrases.append(tail) }
                 print("\(phrases.count) phrase(s) detected")
@@ -24,7 +24,8 @@ enum FileTest {
                         print(String(format: "(skipped %.1fs of audio: speech %.2f, checked in %.3fs)", Double(p.count) / Double(sampleRate), c, Date().timeIntervalSince(t0)))
                         continue
                     }
-                    let text = try await engine.text(for: p, corrections: defaultCorrections, vocabulary: vocabulary, previous: previous)
+                    let text = try await engine.text(for: p, corrections: defaultCorrections, vocabulary: vocabulary,
+                                                     previous: commands ? "" : previous, expectingPrompt: commands)
                     if !text.isEmpty { previous = text }
                     print(String(format: "(%.1fs for %.1fs of audio, speech %.2f) %@", Date().timeIntervalSince(t0), Double(p.count) / Double(sampleRate), confidence ?? -1, text))
                 }

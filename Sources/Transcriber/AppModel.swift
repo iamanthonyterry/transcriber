@@ -40,7 +40,8 @@ final class AppModel: ObservableObject {
     private let translator = Translator()
     private let engine = SpeechEngine()
     private var captures: [UUID: AudioCapture] = [:]
-    private let osc = OSCSender()
+    private let cues = CueSender()
+    private let oscIn = OSCListener()
     private var cueGuard = CueGuard()
     /// The last voice cues heard, newest first, with what became of each (shown in the menu bar and Settings).
     @Published var cueLog: [CueEvent] = []
@@ -61,6 +62,7 @@ final class AppModel: ObservableObject {
         refreshDevices()
         loadLanguages()
         updates.model = self
+        connectControls()
         Task { @MainActor in await self.pcoStartup() }
         // Resume after a reboot or an update (never pops the "key needed" alert on a fresh install).
         if settings.autoStart && !token.isEmpty { Task { @MainActor in self.start() } }
@@ -209,6 +211,7 @@ final class AppModel: ObservableObject {
 
     func apply() {
         SettingsStore.save(settings, token: token)
+        connectControls()
         if running {
             restarting = true  // a settings change must not split the session
             stop()
@@ -439,7 +442,41 @@ final class AppModel: ObservableObject {
     var hasVoiceCues: Bool { !settings.oscRules.isEmpty && settings.inputs.contains { $0.triggerOSC } }
 
     func sendOSC(_ rule: OSCRule) {
-        osc.send(rule, host: settings.oscHost, port: settings.oscPort)
+        cues.send(rule, host: settings.oscHost, port: settings.oscPort)
+    }
+
+    /// The Test button: a rule with a number in it is tried with 1.
+    func testCue(_ rule: OSCRule) { sendOSC(rule.filled(with: "1")) }
+
+    /// Opens what the cue settings need: the MIDI source, and the port that takes OSC commands.
+    private func connectControls() {
+        cues.prepare(settings.oscRules)
+        if oscIn.port != settings.oscInPort {
+            oscIn.start(port: settings.oscInPort) { [weak self] address, arguments in self?.remote(address, arguments) }
+        }
+    }
+
+    /// OSC sent to this Mac: /transcriber/start, /stop, /clear, /save, and /cues (1 or 0, or /cues/on and /cues/off).
+    private func remote(_ address: String, _ arguments: [String]) {
+        switch address.lowercased() {
+        case "/transcriber/start": if !running { start() }
+        case "/transcriber/stop": if running { stop() }
+        case "/transcriber/clear": clearTranscript()
+        case "/transcriber/save":
+            if !settings.saveFolder.isEmpty { saveTranscript(to: URL(fileURLWithPath: settings.saveFolder, isDirectory: true)) }
+        case "/transcriber/cues/on", "/transcriber/cues/off", "/transcriber/cues":
+            let on = address.lowercased().hasSuffix("/on") || (address.lowercased().hasSuffix("/cues") && (arguments.first.flatMap(Double.init) ?? 1) != 0)
+            settings.oscOn = on
+            saveSettings()
+        default: break
+        }
+    }
+
+    /// Empties the transcript window and the website's page (the saved copy still gets everything).
+    func clearTranscript() {
+        lines = []
+        lastText = ""
+        if let sender { Task { await sender.reset() } }
     }
 
     func liveURL() -> URL? {
@@ -499,11 +536,19 @@ final class AppModel: ObservableObject {
         let worker = Task {
             var heard: [UUID: (text: String, at: Date)] = [:]  // each input's last phrase, as context for its next one
             while let phrase = await phraseQueue.next(), !Task.isCancelled {
-                if let gate, !gate.isSpeech(SpeechEngine.normalized(phrase.audio)) { continue }  // music, singing, applause, noise
+                // Music, singing, applause and noise go no further. A lone short word ("Booth.") scores lower than
+                // a sentence, so commands-only inputs get a lower bar.
+                if let gate, (gate.speechConfidence(SpeechEngine.normalized(phrase.audio)) ?? 1) < (phrase.input.commandsOnly ? 0.3 : SpeechGate.threshold) { continue }
                 // After a long gap the last phrase is no longer what was "just said".
                 let previous = heard[phrase.input.id].flatMap { Date().timeIntervalSince($0.at) < 30 ? $0.text : nil } ?? ""
-                let vocabulary = await MainActor.run { self.settings.promptVocabulary }  // Planning Center's names change week to week
-                guard let text = try? await engine.text(for: phrase.audio, corrections: corrections, vocabulary: vocabulary, previous: previous),
+                // Planning Center's names change week to week. A commands-only input is told the phrases it is
+                // listening for instead, and nothing else: every prompt word delays the cue.
+                let commands = phrase.input.commandsOnly
+                let vocabulary = await MainActor.run {
+                    commands ? Cues.vocabulary(self.settings.oscRules, wakeWord: self.settings.oscWakeWord) : self.settings.promptVocabulary
+                }
+                guard let text = try? await engine.text(for: phrase.audio, corrections: corrections, vocabulary: vocabulary,
+                                                        previous: commands ? "" : previous, expectingPrompt: commands),
                       !text.isEmpty else { continue }
                 heard[phrase.input.id] = (text, Date())
                 if phrase.input.triggerOSC { await MainActor.run { self.fireOSC(for: text) } }  // before translating, so cues aren't delayed
@@ -568,7 +613,7 @@ final class AppModel: ObservableObject {
         let missing = inputs.filter(isMissing)
         let missingNote = missing.isEmpty ? "" : " (“\(missing[0].device ?? "")” isn’t connected)"
         for input in inputs where !isMissing(input) {
-            let segmenter = Segmenter(minDb: minDb)
+            let segmenter = Segmenter(minDb: minDb, endPause: input.commandsOnly ? 0.3 : 0.5)  // a command is short: don't wait as long for it to end
             let queue = DispatchQueue(label: "audio.segment.\(input.id)")
             let capture = AudioCapture()
             let isMeter = input.id == meterID

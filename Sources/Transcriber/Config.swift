@@ -36,6 +36,7 @@ struct Settings: Codable, Equatable {
     var oscOn = true               // the menu bar's off switch for voice cues (inputs keep listening)
     var oscWakeWord = ""           // when set, a phrase only fires right after this word
     var oscCooldown = 2.0          // seconds before the same phrase can fire again
+    var oscInPort = 0              // listen here for OSC that runs the transcriber (0 = off)
 }
 
 extension Settings {
@@ -43,6 +44,11 @@ extension Settings {
     var promptVocabulary: String {
         pcoOn && pcoTermsOn ? ([vocabulary] + pcoTerms).joined(separator: "\n") : vocabulary
     }
+}
+
+extension AudioInput {
+    /// Used only for voice cues: tuned to react fast instead of to read well.
+    var commandsOnly: Bool { triggerOSC && !sendToSite }
 }
 
 /// One audio input (a device and one of its channels) and what its speech is used for.
@@ -117,6 +123,7 @@ extension Settings {
         oscOn = try c.decodeIfPresent(Bool.self, forKey: .oscOn) ?? d.oscOn
         oscWakeWord = try c.decodeIfPresent(String.self, forKey: .oscWakeWord) ?? d.oscWakeWord
         oscCooldown = try c.decodeIfPresent(Double.self, forKey: .oscCooldown) ?? d.oscCooldown
+        oscInPort = try c.decodeIfPresent(Int.self, forKey: .oscInPort) ?? d.oscInPort
     }
 }
 
