@@ -9,6 +9,7 @@ struct Settings: Codable, Equatable {
     var connectedTo = ""           // "Church · Campus" shown after signing in through the website (empty = key typed by hand)
     var inputs = [AudioInput()]    // every audio input being listened to
     var corrections = defaultCorrections  // one "heard => correct" per line, applied to every phrase
+    var vocabulary = ""            // names and terms Whisper should expect (one per line or comma-separated)
     var minDb = -50.0
     var scheduleOn = false
     var scheduleWindows = [ScheduleWindow()]  // listens during any of these
@@ -23,9 +24,18 @@ struct Settings: Codable, Equatable {
     var pcoLeadMinutes = 15        // start listening this long before a service time
     var pcoLengthMinutes = 90      // and keep listening this long after it starts
     var pcoTimes: [Date] = []      // upcoming service start times (cached so it still works offline)
+    var pcoTermsOn = true          // also tell Whisper the plan's speakers, series and title
+    var pcoTerms: [String] = []    // those names for today's or the next plan (cached so it still works offline)
     var oscHost = "127.0.0.1"      // where OSC messages go (QLab, ProPresenter, a lighting desk…)
     var oscPort = 53000
     var oscRules: [OSCRule] = []   // phrase -> OSC message
+}
+
+extension Settings {
+    /// What Whisper is told to expect: the typed names and terms first, then Planning Center's.
+    var promptVocabulary: String {
+        pcoOn && pcoTermsOn ? ([vocabulary] + pcoTerms).joined(separator: "\n") : vocabulary
+    }
 }
 
 /// One audio input (a device and one of its channels) and what its speech is used for.
@@ -65,6 +75,7 @@ extension Settings {
                                  triggerOSC: osc.contains(device ?? ""))]
         }
         corrections = try c.decodeIfPresent(String.self, forKey: .corrections) ?? d.corrections
+        vocabulary = try c.decodeIfPresent(String.self, forKey: .vocabulary) ?? d.vocabulary
         minDb = try c.decodeIfPresent(Double.self, forKey: .minDb) ?? d.minDb
         scheduleOn = try c.decodeIfPresent(Bool.self, forKey: .scheduleOn) ?? d.scheduleOn
         if let w = try c.decodeIfPresent([ScheduleWindow].self, forKey: .scheduleWindows) {
@@ -86,6 +97,8 @@ extension Settings {
         pcoLeadMinutes = try c.decodeIfPresent(Int.self, forKey: .pcoLeadMinutes) ?? d.pcoLeadMinutes
         pcoLengthMinutes = try c.decodeIfPresent(Int.self, forKey: .pcoLengthMinutes) ?? d.pcoLengthMinutes
         pcoTimes = try c.decodeIfPresent([Date].self, forKey: .pcoTimes) ?? d.pcoTimes
+        pcoTermsOn = try c.decodeIfPresent(Bool.self, forKey: .pcoTermsOn) ?? d.pcoTermsOn
+        pcoTerms = try c.decodeIfPresent([String].self, forKey: .pcoTerms) ?? d.pcoTerms
         oscHost = try c.decodeIfPresent(String.self, forKey: .oscHost) ?? d.oscHost
         oscPort = try c.decodeIfPresent(Int.self, forKey: .oscPort) ?? d.oscPort
         oscRules = try c.decodeIfPresent([OSCRule].self, forKey: .oscRules) ?? d.oscRules

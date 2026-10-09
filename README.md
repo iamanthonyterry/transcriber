@@ -23,6 +23,7 @@ A Mac that was set up with the old Python app picks up its settings automaticall
 - **Only Sundays 8:00–12:30**: the app switches itself on and off.
 - **Website settings…**: website sign-in / campus, *Start listening when the app opens*, *Open at login*, and tuning:
   - **Corrections** (`heard => correct`, one per line) fix names and places Whisper keeps misspelling, e.g. `Life Point => Lifepoint`.
+  - **Names and terms**: words Whisper should expect (this week's speaker, the series title, local place names), separated by commas or lines. It hears them correctly instead of fixing them afterwards. About ten names fit; a long list adds up to half a second of delay. With the schedule set to Planning Center, *Expect this plan's names* adds the speakers, series and title of today's (or the next) plan after your own list.
   - **Noise gate** (dB): hears noise as speech? Raise it (try −42). Misses quiet speech? Lower it.
   - **OSC**: send an OSC message (UDP, e.g. to QLab on port 53000) when a phrase is heard. Only inputs with *Trigger OSC* on send them, so a separate mic can drive cues without going to the website.
 - Best accuracy comes from a clean feed of just the speaker's mic channel from the board, not a room mic, and not during music.
@@ -45,7 +46,7 @@ Needs Xcode, the Developer ID certificate, the `AC_PASSWORD` notarytool profile 
 ```
 
 `swift build` / `swift run` work for development; `./build_app.sh` makes a signed `build/Transcriber.app`.
-Test the pipeline without a mixer: `build/Transcriber.app/Contents/MacOS/Transcriber --transcribe-file some.wav` (prints phrases, sends nothing).
+Test the pipeline without a mixer: `build/Transcriber.app/Contents/MacOS/Transcriber --transcribe-file some.wav` (prints phrases, sends nothing; add `--vocabulary "Name, Term"` to try names and terms).
 
 ## Website side
 

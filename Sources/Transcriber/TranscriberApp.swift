@@ -8,7 +8,8 @@ struct TranscriberApp: App {
 
     init() {
         if let i = CommandLine.arguments.firstIndex(of: "--transcribe-file"), i + 1 < CommandLine.arguments.count {
-            FileTest.run(path: CommandLine.arguments[i + 1])  // dev/testing: print phrases from an audio file, then exit
+            let v = CommandLine.arguments.firstIndex(of: "--vocabulary").flatMap { $0 + 1 < CommandLine.arguments.count ? CommandLine.arguments[$0 + 1] : nil }
+            FileTest.run(path: CommandLine.arguments[i + 1], vocabulary: v ?? "")  // dev/testing: print phrases from an audio file, then exit
         }
         if let i = CommandLine.arguments.firstIndex(of: "--level-check"), i + 1 < CommandLine.arguments.count {
             FileTest.levelCheck(path: CommandLine.arguments[i + 1])  // dev/testing: judge an audio file's level, then exit
@@ -317,6 +318,10 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             Section("Tuning") {
+                TextField("Names and terms", text: $model.settings.vocabulary, axis: .vertical)
+                    .lineLimit(2...5)
+                Text("Names, places and unusual words to expect, separated by commas or lines (e.g. this week’s speaker, the series title). Put the most important first and keep the list short: about ten names fit, and a longer list adds up to half a second of delay.")
+                    .font(.caption).foregroundStyle(.secondary)
                 TextField("Corrections", text: $model.settings.corrections, axis: .vertical)
                     .lineLimit(3...6)
                 Text("One per line, written heard => correct (e.g. Life Point => Lifepoint). Fixes names and places Whisper keeps getting wrong.")
@@ -406,7 +411,7 @@ struct PlanningCenterSection: View {
                     .disabled(model.pcoBusy || !PCOConfig.isConfigured)
                 if model.pcoBusy { ProgressView().controlSize(.small) }
             }
-            Text(PCOConfig.isConfigured ? "Opens Planning Center in your browser. Only service types and times are read."
+            Text(PCOConfig.isConfigured ? "Opens Planning Center in your browser. Only service types, times and who is on the plan are read."
                  : "This build has no Planning Center credentials (see Support/pco.env.example).")
                 .font(.caption).foregroundStyle(.secondary)
         } else {
@@ -431,6 +436,14 @@ struct PlanningCenterSection: View {
                     Text("\(t.formatted(.dateTime.weekday(.wide).month(.abbreviated).day())): listens \(w.lowerBound.formatted(date: .omitted, time: .shortened))–\(w.upperBound.formatted(date: .omitted, time: .shortened))")
                         .font(.caption)
                 }
+            }
+            Toggle("Expect this plan’s names", isOn: $model.settings.pcoTermsOn)
+                .onChange(of: model.settings.pcoTermsOn) { _, on in if on { Task { await model.refreshPCOTimes() } } }
+            if model.settings.pcoTermsOn {
+                Text(model.settings.pcoTerms.isEmpty
+                     ? "The speakers, series and title of today’s or the next plan are added to “Names and terms” so they are spelled right."
+                     : "Added to “Names and terms”: \(model.settings.pcoTerms.joined(separator: ", ")). Your own list comes first; about ten names fit in all.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             HStack {
                 Button("Refresh times") { Task { await model.refreshPCOTimes() } }

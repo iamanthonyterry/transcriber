@@ -162,6 +162,52 @@ actor PCOClient {
             return plain.date(from: s) ?? fractional.date(from: s)
         }.sorted()
     }
+
+    /// Names and titles worth telling Whisper about for today's plan (or the next one): who is speaking,
+    /// then the series and plan titles. The rest of the roster is left out: every name costs a little delay.
+    func planTerms(typeID: String) async throws -> [String] {
+        struct Plans: Decodable {
+            struct Plan: Decodable { var id: String; var attributes: Attrs }
+            struct Attrs: Decodable { var title: String?; var series_title: String?; var sort_date: String? }
+            var data: [Plan]
+        }
+        func plan(_ filter: String, _ order: String) async throws -> Plans.Plan? {
+            let data = try await get("/services/v2/service_types/\(typeID)/plans", ["filter": filter, "order": order, "per_page": "1"])
+            return try JSONDecoder().decode(Plans.self, from: data).data.first
+        }
+        // "past" is on or before today, so its newest plan is today's if there is one.
+        let latest = try await plan("past", "-sort_date")
+        let today = latest.flatMap { $0.attributes.sort_date }.flatMap { ISO8601DateFormatter().date(from: $0) }.map(Calendar.current.isDateInToday) ?? false
+        let next = try await plan("future", "sort_date")
+        guard let chosen = today ? latest : next else { return [] }
+
+        struct Members: Decodable {
+            struct Member: Decodable { var attributes: Attrs; var relationships: Rels? }
+            struct Attrs: Decodable { var name: String?; var status: String?; var team_position_name: String? }
+            struct Rels: Decodable { var team: Ref? }
+            struct Ref: Decodable { var data: Target? }
+            struct Target: Decodable { var id: String }
+            struct Team: Decodable { var type: String; var id: String; var attributes: TeamAttrs? }
+            struct TeamAttrs: Decodable { var name: String? }
+            var data: [Member]
+            var included: [Team]?
+        }
+        let members = try JSONDecoder().decode(Members.self, from: try await get(
+            "/services/v2/service_types/\(typeID)/plans/\(chosen.id)/team_members", ["include": "team", "per_page": "100"]))
+        var teams: [String: String] = [:]
+        for t in members.included ?? [] where t.type == "Team" { teams[t.id] = t.attributes?.name ?? "" }
+        var speakers: [String] = []
+        for m in members.data {
+            guard let name = m.attributes.name, m.attributes.status?.lowercased().hasPrefix("d") != true else { continue }  // not declined
+            let position = (m.attributes.team_position_name ?? "").lowercased()
+            let team = (m.relationships?.team?.data.flatMap { teams[$0.id] } ?? "").lowercased()
+            if Self.speakerWords.contains(where: { position.contains($0) || team.contains($0) }) { speakers.append(name) }
+        }
+        return speakers + [chosen.attributes.series_title, chosen.attributes.title].compactMap { $0 }
+    }
+
+    /// A team or position with one of these in its name is someone who talks from the stage.
+    private static let speakerWords = ["speak", "teach", "preach", "pastor", "sermon", "message", "emcee"]
 }
 
 /// Catches the browser's redirect back to http://127.0.0.1:<port>/callback and returns the OAuth code.

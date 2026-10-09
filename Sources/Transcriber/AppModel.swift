@@ -225,6 +225,7 @@ final class AppModel: ObservableObject {
             settings.pcoServiceTypeID = nil
             settings.pcoServiceTypeName = ""
             settings.pcoTimes = []
+            settings.pcoTerms = []
             saveSettings()
         }
     }
@@ -237,6 +238,7 @@ final class AppModel: ObservableObject {
         settings.pcoServiceTypeID = id
         settings.pcoServiceTypeName = pcoTypes.first { $0.id == id }?.name ?? ""
         settings.pcoTimes = []
+        settings.pcoTerms = []
         saveSettings()
         Task { await refreshPCOTimes() }
     }
@@ -247,6 +249,7 @@ final class AppModel: ObservableObject {
         defer { pcoBusy = false }
         do {
             settings.pcoTimes = try await pco.serviceTimes(typeID: id)  // the cached times stay if this fails
+            if settings.pcoTermsOn { settings.pcoTerms = try await pco.planTerms(typeID: id) }
             pcoError = nil
             saveSettings()
         } catch { handlePCO(error) }
@@ -423,8 +426,14 @@ final class AppModel: ObservableObject {
             }
         }
         let worker = Task {
+            var heard: [UUID: (text: String, at: Date)] = [:]  // each input's last phrase, as context for its next one
             while let phrase = await phraseQueue.next(), !Task.isCancelled {
-                guard let text = try? await engine.text(for: phrase.audio, corrections: corrections), !text.isEmpty else { continue }
+                // After a long gap the last phrase is no longer what was "just said".
+                let previous = heard[phrase.input.id].flatMap { Date().timeIntervalSince($0.at) < 30 ? $0.text : nil } ?? ""
+                let vocabulary = await MainActor.run { self.settings.promptVocabulary }  // Planning Center's names change week to week
+                guard let text = try? await engine.text(for: phrase.audio, corrections: corrections, vocabulary: vocabulary, previous: previous),
+                      !text.isEmpty else { continue }
+                heard[phrase.input.id] = (text, Date())
                 if phrase.input.triggerOSC { await MainActor.run { self.fireOSC(for: text) } }  // before translating, so cues aren't delayed
                 guard phrase.input.sendToSite, await MainActor.run(body: { self.pushingToSite }) else { continue }
                 let (targets, forward) = await MainActor.run { (self.settings.translateTo, self.settings.sendTranslations) }

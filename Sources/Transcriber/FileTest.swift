@@ -3,8 +3,9 @@ import Foundation
 
 /// `Transcriber --transcribe-file x.wav`: runs the same segmenter + Whisper pipeline on a recording and
 /// prints each phrase. For testing without a mixer. Sends nothing to the website.
+/// Add `--vocabulary "Name, Term"` to try names and terms.
 enum FileTest {
-    static func run(path: String) {
+    static func run(path: String, vocabulary: String = "") {
         Task.detached {
             do {
                 let samples = try load(path)
@@ -14,9 +15,11 @@ enum FileTest {
                 var phrases = seg.feed(samples: samples)
                 if let tail = seg.flush() { phrases.append(tail) }
                 print("\(phrases.count) phrase(s) detected")
+                var previous = ""
                 for p in phrases {
                     let t0 = Date()
-                    let text = try await engine.text(for: p, corrections: defaultCorrections)
+                    let text = try await engine.text(for: p, corrections: defaultCorrections, vocabulary: vocabulary, previous: previous)
+                    if !text.isEmpty { previous = text }
                     print(String(format: "(%.1fs for %.1fs of audio) %@", Date().timeIntervalSince(t0), Double(p.count) / Double(sampleRate), text))
                 }
                 exit(0)
